@@ -14,7 +14,11 @@ module.exports = {
     {
       name: 'jarvis-worker',
       cwd: __dirname + '/..',
-      script: 'node_modules/.bin/tsx',
+      // Same reasoning as jarvis-web above: PM2 forks this script directly
+      // (not through a shell), so it must be the real tsx entry file, not
+      // the node_modules/.bin shim, which is a shell script and breaks
+      // under direct exec.
+      script: 'node_modules/tsx/dist/cli.mjs',
       args: 'worker/push-worker.ts',
       env: { NODE_ENV: 'production' },
     },
