@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { DeployLogView } from '@/components/DeployLogView';
 
 interface Deployment {
   id: string;
@@ -33,6 +34,7 @@ export default function DeploymentsPage() {
   const client = useQueryClient();
   const [form, setForm] = useState(emptyForm);
   const [showForm, setShowForm] = useState(false);
+  const [activeRuns, setActiveRuns] = useState<Record<string, string>>({});
 
   const { data: deployments } = useQuery({
     queryKey: ['deployments'],
@@ -51,6 +53,24 @@ export default function DeploymentsPage() {
       setForm(emptyForm);
       setShowForm(false);
     },
+  });
+
+  const deploy = useMutation({
+    mutationFn: (deploymentId: string) =>
+      fetch(`/api/deployments/${deploymentId}/deploy`, { method: 'POST' }).then((r) => r.json() as Promise<{ provisionRunId: string }>),
+    onSuccess: (data, deploymentId) => {
+      setActiveRuns((prev) => ({ ...prev, [deploymentId]: data.provisionRunId }));
+    },
+  });
+
+  useQuery({
+    queryKey: ['deployments-poll', Object.keys(activeRuns).join(',')],
+    queryFn: async () => {
+      await client.invalidateQueries({ queryKey: ['deployments'] });
+      return null;
+    },
+    refetchInterval: Object.keys(activeRuns).length > 0 ? 2000 : false,
+    enabled: Object.keys(activeRuns).length > 0,
   });
 
   return (
@@ -108,17 +128,38 @@ export default function DeploymentsPage() {
             <th>Status</th>
             <th>Last provisioned</th>
             <th>Last push</th>
+            <th></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-800">
           {deployments?.map((d) => (
-            <tr key={d.id}>
-              <td className="py-2">{d.name}</td>
-              <td>{d.brandName}</td>
-              <td>{d.status}</td>
-              <td>{d.lastProvisionedAt ?? '—'}</td>
-              <td>{d.lastPushAt ?? '—'}</td>
-            </tr>
+            <Fragment key={d.id}>
+              <tr>
+                <td className="py-2">{d.name}</td>
+                <td>{d.brandName}</td>
+                <td>{d.status}</td>
+                <td>{d.lastProvisionedAt ?? '—'}</td>
+                <td>{d.lastPushAt ?? '—'}</td>
+                <td>
+                  {(d.status === 'REGISTERED' || d.status === 'FAILED') && (
+                    <button
+                      onClick={() => deploy.mutate(d.id)}
+                      disabled={deploy.isPending}
+                      className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium disabled:opacity-60"
+                    >
+                      Deploy
+                    </button>
+                  )}
+                </td>
+              </tr>
+              {activeRuns[d.id] && (
+                <tr>
+                  <td colSpan={6}>
+                    <DeployLogView deploymentId={d.id} runId={activeRuns[d.id]} />
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
         </tbody>
       </table>
