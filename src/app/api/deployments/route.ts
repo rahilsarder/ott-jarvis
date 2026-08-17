@@ -10,7 +10,14 @@ async function requireSession(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   if (!(await requireSession(req))) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const deployments = await prisma.deployment.findMany({ orderBy: { createdAt: 'desc' } });
+  // contentApiKey is the bearer secret Jarvis uses against each deployment's own admin API. The UI
+  // never reads it, so it must not ship to the browser (React Query cache, devtools, etc.). `omit`
+  // rather than an explicit `select` so fields added to the model later are exposed by default and
+  // only this one stays server-side.
+  const deployments = await prisma.deployment.findMany({
+    orderBy: { createdAt: 'desc' },
+    omit: { contentApiKey: true },
+  });
   return NextResponse.json(deployments);
 }
 

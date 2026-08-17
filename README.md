@@ -25,11 +25,20 @@ Unlike the OTT repo, Jarvis has no `ops/deploy.sh` that writes `.env` for
 you — create it on the box yourself before starting the app: `cp
 .env.example .env`, then fill in real production values for
 `DATABASE_URL`, `JARVIS_SESSION_SECRET`, `OTT_REPO_PATH`, and the
-`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` vars. Both `jarvis-web` (via
-`next start`'s built-in `.env` auto-loading) and `jarvis-worker` (via
-`tsx`'s built-in `.env` auto-loading) read this file from their working
-directory at startup — without it, neither process can find
-`DATABASE_URL` and both fail to start.
+`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` vars. Both processes read this
+file at startup, but by different mechanisms: `jarvis-web` via `next
+start`'s built-in `.env` auto-loading, and `jarvis-worker` via Node's own
+`--env-file=.env` flag, passed as `node_args` in
+`ops/ecosystem.config.js` (and baked into the `worker` and `seed` scripts
+in `package.json` for local dev and one-off runs).
+
+`tsx` does *not* load `.env` files itself — that is what the flag is for.
+Prisma Client separately loads `.env` on its own to resolve
+`DATABASE_URL`, so DB access happens to work either way, but nothing
+else does: run `pnpm seed` without the flag and it silently ignores
+`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` and seeds the hardcoded
+`admin@jarvis.local` / `changeme123` fallback instead. Without `.env` on
+the box at all, neither process can find `DATABASE_URL` and both fail.
 
 ```bash
 pnpm install --frozen-lockfile

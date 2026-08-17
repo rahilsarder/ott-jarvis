@@ -11,7 +11,8 @@ async function requireSession(req: NextRequest) {
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!(await requireSession(req))) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;
-  const deployment = await prisma.deployment.findUnique({ where: { id } });
+  // See the note in ../route.ts: contentApiKey is server-side only.
+  const deployment = await prisma.deployment.findUnique({ where: { id }, omit: { contentApiKey: true } });
   if (!deployment) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   return NextResponse.json(deployment);
 }
@@ -21,7 +22,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const { id } = await params;
   const parsed = updateDeploymentSchema.safeParse(await req.json());
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-  const deployment = await prisma.deployment.update({ where: { id }, data: parsed.data });
+  const deployment = await prisma.deployment.update({
+    where: { id },
+    data: parsed.data,
+    omit: { contentApiKey: true },
+  });
   return NextResponse.json(deployment);
 }
 

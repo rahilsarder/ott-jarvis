@@ -37,6 +37,12 @@ export default function ContentPage() {
   const { data: items } = useQuery({
     queryKey: ['content'],
     queryFn: () => fetch('/api/content').then((r) => r.json() as Promise<ContentItemRow[]>),
+    // Push status is advanced by the worker out-of-band, so without this a freshly submitted item's
+    // badges never move without a manual reload. Flat interval rather than the deployments page's
+    // conditional polling: there is no clean "stop" signal here (something may always be pending),
+    // and continuous lightweight polling while the page is open matches the design's
+    // "simple polling, not websockets" approach.
+    refetchInterval: 3000,
   });
 
   const submit = useMutation({

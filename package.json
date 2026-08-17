@@ -6,10 +6,10 @@
     "dev": "next dev -p 3100",
     "build": "next build",
     "start": "next start -p 3100",
-    "worker": "tsx worker/push-worker.ts",
+    "worker": "node --env-file=.env node_modules/tsx/dist/cli.mjs worker/push-worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "node --env-file=.env node_modules/tsx/dist/cli.mjs prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",
