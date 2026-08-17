@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DeploymentStatus {
+  REGISTERED
+  PROVISIONING
+  ACTIVE
+  FAILED
+  PAUSED
+  DECOMMISSIONED
+}
+
+model Deployment {
+  id                     String           @id @default(cuid())
+  name                   String
+  brandName              String
+  baseUrl                String
+  sshHost                String
+  sshUser                String
+  contentApiKey          String?
+  adminEmail             String
+  flussonicBaseUrl       String
+  flussonicSecurelinkKey String           @default("")
+  status                 DeploymentStatus @default(REGISTERED)
+  lastProvisionedAt      DateTime?
+  lastPushAt             DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+
+  pushAttempts  PushAttempt[]
+  provisionRuns ProvisionRun[]
+}
+
+enum ContentKind {
+  MOVIE
+  EPISODE
+}
+
+model ContentItem {
+  id                  String      @id @default(cuid())
+  kind                ContentKind
+  name                String
+  year                Int?
+  streamPath          String
+  seasonNumber        Int?
+  episodeNumber       Int?
+  sourcePath          String?
+  submittedAt         DateTime    @default(now())
+  submittedByApiKeyId String?
+  submittedByUserId   String?
+
+  pushAttempts PushAttempt[]
+}
+
+enum PushStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model PushAttempt {
+  id            String      @id @default(cuid())
+  contentItemId String
+  deploymentId  String
+  status        PushStatus  @default(PENDING)
+  httpStatus    Int?
+  errorMessage  String?
+  attemptedAt   DateTime?
+  retryCount    Int         @default(0)
+  nextRetryAt   DateTime?
+  createdAt     DateTime    @default(now())
+
+  contentItem ContentItem @relation(fields: [contentItemId], references: [id])
+  deployment  Deployment  @relation(fields: [deploymentId], references: [id])
+
+  @@index([status, nextRetryAt])
+}
+
+enum ProvisionRunStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model ProvisionRun {
+  id           String              @id @default(cuid())
+  deploymentId String
+  status       ProvisionRunStatus  @default(RUNNING)
+  logText      String              @default("")
+  startedAt    DateTime            @default(now())
+  finishedAt   DateTime?
+
+  deployment Deployment @relation(fields: [deploymentId], references: [id])
+}
+
+model JarvisUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model JarvisApiKey {
+  id         String    @id @default(cuid())
+  label      String
+  keyHash    String    @unique
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+}
