@@ -16,6 +16,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const runId = await startProvisioning(id);
-  void executeProvisioning(id, runId);
+  // executeProvisioning has its own top-level try/catch that marks the run/deployment FAILED on any
+  // error. This .catch() is a defense-in-depth backstop only, in case that handling itself throws —
+  // it must never be relied on as the primary failure path.
+  void executeProvisioning(id, runId).catch((err) => {
+    console.error(`[jarvis] executeProvisioning(deploymentId=${id}, runId=${runId}) failed unexpectedly`, err);
+  });
   return NextResponse.json({ provisionRunId: runId }, { status: 202 });
 }
