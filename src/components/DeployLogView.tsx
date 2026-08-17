@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 interface ProvisionRunStatus {
@@ -9,7 +10,15 @@ interface ProvisionRunStatus {
   finishedAt: string | null;
 }
 
-export function DeployLogView({ deploymentId, runId }: { deploymentId: string; runId: string }) {
+export function DeployLogView({
+  deploymentId,
+  runId,
+  onSettled,
+}: {
+  deploymentId: string;
+  runId: string;
+  onSettled?: () => void;
+}) {
   const { data } = useQuery({
     queryKey: ['provision-run', runId],
     queryFn: () =>
@@ -18,6 +27,14 @@ export function DeployLogView({ deploymentId, runId }: { deploymentId: string; r
       ),
     refetchInterval: (query) => (query.state.data?.status === 'RUNNING' ? 1500 : false),
   });
+
+  const settledRef = useRef(false);
+  useEffect(() => {
+    if (data?.status && data.status !== 'RUNNING' && !settledRef.current) {
+      settledRef.current = true;
+      onSettled?.();
+    }
+  }, [data?.status, onSettled]);
 
   return (
     <div className="mt-2 rounded border border-neutral-800 bg-black p-3">

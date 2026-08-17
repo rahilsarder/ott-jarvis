@@ -155,7 +155,17 @@ export default function DeploymentsPage() {
               {activeRuns[d.id] && (
                 <tr>
                   <td colSpan={6}>
-                    <DeployLogView deploymentId={d.id} runId={activeRuns[d.id]} />
+                    <DeployLogView
+                      deploymentId={d.id}
+                      runId={activeRuns[d.id]}
+                      onSettled={() =>
+                        setActiveRuns((prev) => {
+                          const next = { ...prev };
+                          delete next[d.id];
+                          return next;
+                        })
+                      }
+                    />
                   </td>
                 </tr>
               )}
