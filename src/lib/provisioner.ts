@@ -138,8 +138,9 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
           `Clicking Deploy again will land here every time — the target will keep taking the update path. ` +
           `This deployment cannot be recovered through Jarvis today; it needs manual intervention:` +
           `\n[jarvis]   Option A (recommended — adopt the existing box). SSH in ` +
-          `(ssh ${deployment.sshUser}@${deployment.sshHost}) and recover the admin credentials for ` +
-          `${deployment.adminEmail} on that target. Then mint a key against the target yourself:` +
+          `(ssh ${deployment.sshUser}@${deployment.sshHost}) and read the admin password deploy.sh wrote ` +
+          `into the target's own .env when it originally set this box up: ` +
+          `grep SEED_ADMIN_PASSWORD /srv/ott/.env. Then mint a key against the target yourself:` +
           `\n[jarvis]     curl -sX POST ${deployment.baseUrl}/api/auth/login -H 'Content-Type: application/json' ` +
           `-d '{"email":"${deployment.adminEmail}","password":"<admin-password>"}'` +
           `\n[jarvis]     curl -sX POST ${deployment.baseUrl}/api/admin/api-keys -H 'Content-Type: application/json' ` +
@@ -150,13 +151,15 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
           `\n[jarvis]   Option B (start the target over — destructive, and NOT a one-liner). Removing ` +
           `/srv/ott/.env on the target makes the next Deploy click take deploy.sh's first-time-setup path ` +
           `again, but on a box that has already been set up once that path does not restore a known-good ` +
-          `state on its own: the OTT seed upserts the admin with update:{role:'ADMIN'}, so the freshly ` +
-          `printed admin password is NOT applied to the already-existing ${deployment.adminEmail} user (Jarvis ` +
-          `would parse it and then fail to log in), and deploy.sh generates a new DB password into .env while ` +
-          `only creating the "ott" Postgres role if it is missing, so the app would be left with credentials ` +
-          `that do not match the existing role. Taking this route means also resetting that user's password ` +
-          `hash and ALTER USER ott WITH PASSWORD to match the new .env — or wiping the box and starting from ` +
-          `a genuinely clean target.`;
+          `state on its own: deploy.sh generates a fresh random DB password into the new .env while only ` +
+          `creating the "ott" Postgres role if it is missing, so on a box that already has that role, the ` +
+          `run fails at "prisma migrate deploy" (wrong password for the existing role) before it ever gets ` +
+          `to seeding an admin or printing a summary — deploy.sh aborts outright, it does not silently produce ` +
+          `a broken deploy. Even past that, the OTT seed upserts an existing admin with update:{role:'ADMIN'} ` +
+          `only, so a freshly printed admin password still would not apply to the already-existing ` +
+          `${deployment.adminEmail} user. Taking this route means first running ALTER USER ott WITH PASSWORD ` +
+          `to match whatever new .env would contain, and separately resetting that admin user's password hash ` +
+          `— or wiping the box and starting from a genuinely clean target.`;
         await prisma.provisionRun.update({
           where: { id: runId },
           data: { status: 'FAILED', logText: redactSecrets(logText), finishedAt: new Date() },

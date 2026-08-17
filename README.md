@@ -33,12 +33,17 @@ start`'s built-in `.env` auto-loading, and `jarvis-worker` via Node's own
 in `package.json` for local dev and one-off runs).
 
 `tsx` does *not* load `.env` files itself — that is what the flag is for.
-Prisma Client separately loads `.env` on its own to resolve
-`DATABASE_URL`, so DB access happens to work either way, but nothing
-else does: run `pnpm seed` without the flag and it silently ignores
-`SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` and seeds the hardcoded
-`admin@jarvis.local` / `changeme123` fallback instead. Without `.env` on
-the box at all, neither process can find `DATABASE_URL` and both fail.
+In practice this hasn't caused a gap: both `worker/push-worker.ts` and
+`prisma/seed.ts` import the Prisma client, and instantiating it loads the
+*entire* `.env` into `process.env` as a side effect (it resolves
+`DATABASE_URL` and everything else `.env` defines) before either script's
+own code runs — so `SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` and every
+other var have always been visible, not just `DATABASE_URL`. The
+`--env-file` flag makes that guarantee explicit and independent of
+Prisma's side effect rather than incidental to it, and turns a missing
+`.env` into a loud startup failure instead of a silent one. Without
+`.env` on the box at all, neither process can find `DATABASE_URL` and
+both fail either way.
 
 ```bash
 pnpm install --frozen-lockfile

@@ -110,9 +110,9 @@ Four distinct relationships, each with its own credential:
 **Registering + provisioning a deployment**
 1. Admin adds a `Deployment` in Jarvis (name, brand, SSH host/user, admin email, Flussonic params). Status: `REGISTERED`.
 2. Admin has already put Jarvis's public key in that box's `authorized_keys`.
-3. Admin clicks Deploy. Jarvis sets `Deployment.status = PROVISIONING`, creates a `ProvisionRun`, SSHes in, and runs `ops/deploy.sh` non-interactively with the stored params (protocol forced to `http`), streaming stdout/stderr into `ProvisionRun.logText` as it arrives.
+3. Admin clicks Deploy. Jarvis sets `Deployment.status = PROVISIONING`, creates a `ProvisionRun`, and spawns `ops/deploy.sh` as a local child process (from a checkout of the OTT repo on Jarvis's own box) targeting the deployment's `sshUser@sshHost` non-interactively (protocol forced to `http`) — `deploy.sh` itself does the SSH/SCP to the target, Jarvis never holds or uses an SSH library directly. Stdout/stderr streams into `ProvisionRun.logText` as it arrives.
 4. Browser polls the run's log endpoint (~every 1-2s) to show live output. Simple polling, not a websocket — matches the "no unneeded infrastructure" approach elsewhere in this design; revisit only if polling proves too laggy in practice.
-5. On success: `Deployment.status = ACTIVE`, `contentApiKey` generated and stored (via the new admin API-key mechanism), `lastProvisionedAt` set. On failure: `status = FAILED`, log retained for diagnosis, safe to retry (the script itself is written to be idempotent).
+5. On success: `Deployment.status = ACTIVE`, `contentApiKey` generated and stored (via the new admin API-key mechanism), `lastProvisionedAt` set. On failure: `status = FAILED`, log retained for diagnosis. Retry safety is more nuanced than "the script is idempotent" (see §8) — `deploy.sh` re-run against an already-set-up target takes a different, non-equivalent code path that prints no fresh admin credential, so a clean retry only works once a `contentApiKey` is already on file for that deployment.
 
 **Content fan-out**
 1. New content arrives via `POST /api/content` — either the watcher (once built) or the manual form — creating one `ContentItem`.
@@ -129,7 +129,7 @@ Four distinct relationships, each with its own credential:
 
 ## 8. Error handling
 
-- Provisioning failures leave the deployment in `FAILED` with the full log retained — re-running Deploy is the recovery path, relying on `deploy.sh`'s existing idempotency rather than Jarvis building its own rollback logic.
+- Provisioning failures leave the deployment in `FAILED` with the full log retained. Re-running Deploy is the recovery path **only when this deployment already has a `contentApiKey` on file** — `deploy.sh` detects the `.env` it wrote on the first run and takes a different "update" path (pull/build/migrate/reload) that never re-seeds an admin account or prints a credential, so Jarvis reuses the stored key rather than trying to mint a new one, and this correctly covers "some later step failed after `deploy.sh` itself succeeded" (nginx reload, `pm2 start`, or Jarvis's own key-minting call — the single most likely failure, since it runs the instant `deploy.sh` exits). If provisioning never got far enough to mint a key on any prior attempt, retrying just repeats the same dead end forever — `deploy.sh`'s update path can't produce a credential Jarvis doesn't already have, and clicking Deploy again is not a working recovery path for that case. That deployment needs a human to intervene once (recover the seeded admin password from the target's own `.env`, or reset it, then mint a key by hand) — Jarvis surfaces this distinction and a concrete runbook in the failure log rather than silently retrying forever. Building Jarvis's own rollback/reset logic for the initial-failure case remains out of scope for v1.
 - Content push failures retry automatically (bounded), then require a manual retry click — no silent infinite retry loops.
 - A deployment that's `PAUSED` or `DECOMMISSIONED` is skipped entirely by new content fan-out (no `PushAttempt` rows created for it).
 

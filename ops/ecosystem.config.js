@@ -20,19 +20,20 @@ module.exports = {
       // under direct exec.
       script: 'node_modules/tsx/dist/cli.mjs',
       args: 'worker/push-worker.ts',
-      // tsx does NOT read .env files (verified empirically — unlike `next
-      // start`, which loads them via Next's own @next/env). Prisma Client
-      // does load .env on its own (it resolves schemaEnvPath at runtime),
-      // which is the only reason the worker's DB access works today — but
-      // that covers DATABASE_URL alone. Nothing else in this process would
-      // see .env, so any env var read via process.env here (today only
-      // NODE_ENV; OTT_REPO_PATH / JARVIS_SESSION_SECRET if worker code ever
-      // grows into the shared lib/) would silently be undefined. Node's own
-      // --env-file flag populates process.env before tsx or push-worker.ts
-      // is loaded, independently of tsx, so the worker's environment matches
-      // jarvis-web's. Note this also makes a missing .env fail loudly at
-      // startup (ENOENT) instead of half-working — deliberate: .env is a
-      // documented prerequisite for this box.
+      // tsx does NOT read .env files itself (verified empirically — unlike
+      // `next start`, which loads them via Next's own @next/env). In
+      // practice this hasn't mattered: worker/push-worker.ts imports
+      // ../src/lib/prisma, and instantiating PrismaClient loads the whole
+      // .env into process.env as a side effect (it resolves schemaEnvPath
+      // at runtime) before any worker code runs — so every var .env
+      // defines has always been visible here, not just DATABASE_URL. This
+      // flag is defense-in-depth for that implicit dependency: Node's own
+      // --env-file populates process.env directly, independent of Prisma's
+      // side effect, so the worker's environment is guaranteed rather than
+      // incidental. Note this also makes a missing .env fail loudly at
+      // startup (ENOENT) instead of silently relying on Prisma having
+      // loaded it — deliberate: .env is a documented prerequisite for this
+      // box.
       node_args: '--env-file=.env',
       env: { NODE_ENV: 'production' },
     },
