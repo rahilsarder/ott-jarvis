@@ -22,6 +22,19 @@ describe('createDeploymentSchema', () => {
     expect(createDeploymentSchema.parse(rest).flussonicSecurelinkKey).toBe('');
   });
 
+  it('defaults sshPort to 22', () => {
+    expect(createDeploymentSchema.parse(valid).sshPort).toBe(22);
+  });
+
+  it('coerces a form-submitted string sshPort to a number', () => {
+    expect(createDeploymentSchema.parse({ ...valid, sshPort: '2222' }).sshPort).toBe(2222);
+  });
+
+  it('rejects an out-of-range sshPort', () => {
+    expect(createDeploymentSchema.safeParse({ ...valid, sshPort: 70000 }).success).toBe(false);
+    expect(createDeploymentSchema.safeParse({ ...valid, sshPort: 0 }).success).toBe(false);
+  });
+
   it('rejects a missing name', () => {
     const { name: _drop, ...rest } = valid;
     expect(createDeploymentSchema.safeParse(rest).success).toBe(false);

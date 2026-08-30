@@ -23,6 +23,8 @@ model Deployment {
   baseUrl                String
   sshHost                String
   sshUser                String
+  sshPort                Int              @default(22)
+  sshKeyInstalledAt      DateTime?
   contentApiKey          String?
   adminEmail             String
   flussonicBaseUrl       String

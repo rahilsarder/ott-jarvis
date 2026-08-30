@@ -6,6 +6,7 @@ export const createDeploymentSchema = z.object({
   baseUrl: z.string().url(),
   sshHost: z.string().min(1).max(255).trim(),
   sshUser: z.string().min(1).max(100).trim(),
+  sshPort: z.coerce.number().int().min(1).max(65535).default(22),
   adminEmail: z.string().email(),
   flussonicBaseUrl: z.string().url(),
   flussonicSecurelinkKey: z.string().max(500).default(''),
