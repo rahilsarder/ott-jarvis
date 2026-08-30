@@ -66,7 +66,7 @@ export default function DeploymentsPage() {
   const client = useQueryClient();
   const [form, setForm] = useState(emptyForm);
   const [showForm, setShowForm] = useState(false);
-  const [activeRuns, setActiveRuns] = useState<Record<string, string>>({});
+  const [logPanelOpen, setLogPanelOpen] = useState<Record<string, boolean>>({});
   const [sshPanelOpen, setSshPanelOpen] = useState<Record<string, boolean>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<FormState>(emptyForm);
@@ -74,6 +74,9 @@ export default function DeploymentsPage() {
   const { data: deployments } = useQuery({
     queryKey: ['deployments'],
     queryFn: () => fetch('/api/deployments').then((r) => r.json() as Promise<Deployment[]>),
+    // Keeps status/lastProvisionedAt/etc. moving in the table itself while a
+    // deploy is running, independent of whether that row's log panel is open.
+    refetchInterval: (query) => (query.state.data?.some((d) => d.status === 'PROVISIONING') ? 2000 : false),
   });
 
   const create = useMutation({
@@ -107,21 +110,13 @@ export default function DeploymentsPage() {
   });
 
   const deploy = useMutation({
-    mutationFn: (deploymentId: string) =>
-      fetch(`/api/deployments/${deploymentId}/deploy`, { method: 'POST' }).then((r) => r.json() as Promise<{ provisionRunId: string }>),
-    onSuccess: (data, deploymentId) => {
-      setActiveRuns((prev) => ({ ...prev, [deploymentId]: data.provisionRunId }));
+    mutationFn: (deploymentId: string) => fetch(`/api/deployments/${deploymentId}/deploy`, { method: 'POST' }),
+    onSuccess: (_res, deploymentId) => {
+      client.invalidateQueries({ queryKey: ['deployments'] });
+      // Open (not toggle) — clicking Deploy should always bring the log into
+      // view for what's about to happen, even if it was closed before.
+      setLogPanelOpen((prev) => ({ ...prev, [deploymentId]: true }));
     },
-  });
-
-  useQuery({
-    queryKey: ['deployments-poll', Object.keys(activeRuns).join(',')],
-    queryFn: async () => {
-      await client.invalidateQueries({ queryKey: ['deployments'] });
-      return null;
-    },
-    refetchInterval: Object.keys(activeRuns).length > 0 ? 2000 : false,
-    enabled: Object.keys(activeRuns).length > 0,
   });
 
   return (
@@ -210,6 +205,12 @@ export default function DeploymentsPage() {
                       {editingId === d.id ? 'Cancel' : 'Edit'}
                     </button>
                   )}
+                  <button
+                    onClick={() => setLogPanelOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))}
+                    className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium"
+                  >
+                    {logPanelOpen[d.id] ? 'Hide log' : 'View log'}
+                  </button>
                 </td>
               </tr>
               {editingId === d.id && (
@@ -264,19 +265,12 @@ export default function DeploymentsPage() {
                   </td>
                 </tr>
               )}
-              {activeRuns[d.id] && (
+              {logPanelOpen[d.id] && (
                 <tr>
                   <td colSpan={7}>
                     <DeployLogView
                       deploymentId={d.id}
-                      runId={activeRuns[d.id]}
-                      onSettled={() =>
-                        setActiveRuns((prev) => {
-                          const next = { ...prev };
-                          delete next[d.id];
-                          return next;
-                        })
-                      }
+                      onSettled={() => client.invalidateQueries({ queryKey: ['deployments'] })}
                     />
                   </td>
                 </tr>
