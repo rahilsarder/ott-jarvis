@@ -53,7 +53,26 @@ pm2 start ops/ecosystem.config.js
 pm2 save
 ```
 
-Jarvis's own SSH keypair (the process user's default identity) must be
-authorized on every deployment's target box before it's registered —
-provisioning shells out to the OTT repo's `ops/deploy.sh`, which does its
-own SSH/SCP to the target using that identity.
+## Registering a new server
+
+Every deploy shells out to the OTT repo's `ops/deploy.sh`, which does its own
+SSH/SCP to the target — so the target must trust Jarvis's identity
+(`JARVIS_SSH_KEY_PATH`, generated automatically on first use) before it can
+be deployed to. On the deployment's row in the UI, either:
+
+- **Paste Jarvis's public key** (shown there, also available at `GET
+  /api/ssh-identity`) into the target's `~/.ssh/authorized_keys` yourself,
+  then click **Test connection**; or
+- **Enter the server's SSH password** once — Jarvis uses it to install its
+  own key, verifies the key works, then discards the password. This path
+  needs `sshpass` installed on the Jarvis host (`apt install sshpass`); it is
+  never required for the first option.
+
+Either way, the very first connection to a never-before-seen host is
+trust-on-first-use (`StrictHostKeyChecking=accept-new`) into a Jarvis-owned
+known_hosts file (`JARVIS_SSH_KNOWN_HOSTS_PATH`) — not the operator's own
+`~/.ssh/known_hosts`. A non-standard SSH port is set per-deployment
+(`sshPort`, default 22); `ops/deploy.sh` itself has no `-p` flag of its own,
+so this is delivered by wrapping `ssh`/`scp` for the duration of that one
+deploy rather than by editing a script this repo doesn't own — see
+`src/lib/ssh-shim.ts`.

@@ -36,3 +36,18 @@ export function resolveSshIdentity(keyPath: string = defaultSshKeyPath()): SshId
     publicKey: readFileSync(publicKeyPath, 'utf8').trim(),
   };
 }
+
+/**
+ * Never the operator's own ~/.ssh/known_hosts — a dedicated file so
+ * Jarvis's automated trust-on-first-use accept-new behavior (see
+ * ssh-shim.ts) only ever affects entries it manages itself.
+ */
+export function defaultKnownHostsPath(): string {
+  return process.env.JARVIS_SSH_KNOWN_HOSTS_PATH || join(homedir(), '.ssh', 'jarvis_known_hosts');
+}
+
+/** Ensures the containing directory exists; ssh creates the file itself on first use. */
+export function ensureKnownHostsDir(path: string = defaultKnownHostsPath()): string {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  return path;
+}

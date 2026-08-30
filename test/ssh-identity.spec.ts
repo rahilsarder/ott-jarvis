@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveSshIdentity } from '../src/lib/ssh-identity';
+import { ensureKnownHostsDir, resolveSshIdentity } from '../src/lib/ssh-identity';
 
 describe('resolveSshIdentity', () => {
   let dir: string | undefined;
@@ -32,5 +32,24 @@ describe('resolveSshIdentity', () => {
     const second = resolveSshIdentity(keyPath);
 
     expect(second.publicKey).toBe(first.publicKey);
+  });
+});
+
+describe('ensureKnownHostsDir', () => {
+  let dir: string | undefined;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  it('creates the containing directory without touching the known_hosts file itself', () => {
+    dir = mkdtempSync(join(tmpdir(), 'jarvis-known-hosts-'));
+    const knownHostsPath = join(dir, 'nested', 'known_hosts');
+
+    const result = ensureKnownHostsDir(knownHostsPath);
+
+    expect(result).toBe(knownHostsPath);
+    expect(existsSync(join(dir, 'nested'))).toBe(true);
+    expect(existsSync(knownHostsPath)).toBe(false);
   });
 });

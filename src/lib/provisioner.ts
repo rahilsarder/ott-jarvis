@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { prisma } from './prisma';
 import { buildDeployInvocation, parseAdminPassword } from './deploy-command';
+import { defaultKnownHostsPath, ensureKnownHostsDir, resolveSshIdentity } from './ssh-identity';
+import { pathWithShim, writeKeyAuthShim } from './ssh-shim';
 
 async function mintContentApiKey(baseUrl: string, adminEmail: string, adminPassword: string): Promise<string> {
   const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
@@ -57,12 +60,28 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
   let logText = '';
   let lastFlushed = '';
   let flushInterval: ReturnType<typeof setInterval> | undefined;
+  let shimDir: string | undefined;
 
   try {
     const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: deploymentId } });
     const { command, args, env } = buildDeployInvocation(deployment);
     const ottRepoPath = process.env.OTT_REPO_PATH;
     if (!ottRepoPath) throw new Error('OTT_REPO_PATH is not set');
+
+    // deploy.sh calls bare ssh/scp at 10 call sites assuming the target
+    // already trusts the invoking identity — including trusting its host
+    // key, which a freshly registered box never does yet. Without this, the
+    // very first deploy to any new server fails at the first ssh call with
+    // "Host key verification failed." (deploy.sh has no terminal to answer
+    // the interactive prompt). Every deploy, not only password-bootstrapped
+    // ones, goes through this shim.
+    const identity = resolveSshIdentity();
+    const knownHostsPath = ensureKnownHostsDir(defaultKnownHostsPath());
+    shimDir = writeKeyAuthShim({
+      identityKeyPath: identity.privateKeyPath,
+      knownHostsPath,
+      port: deployment.sshPort,
+    }).dir;
 
     const flush = async () => {
       if (logText === lastFlushed) return;
@@ -72,7 +91,10 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
     flushInterval = setInterval(() => void flush(), 1000);
 
     const exitCode = await new Promise<number>((resolve) => {
-      const child = spawn(command, args, { cwd: ottRepoPath, env: { ...process.env, ...env } });
+      const child = spawn(command, args, {
+        cwd: ottRepoPath,
+        env: { ...process.env, ...env, PATH: pathWithShim(shimDir!) },
+      });
       child.stdout.on('data', (chunk: Buffer) => (logText += chunk.toString()));
       child.stderr.on('data', (chunk: Buffer) => (logText += chunk.toString()));
       child.on('close', (code) => resolve(code ?? 1));
@@ -199,5 +221,7 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
       data: { status: 'FAILED', logText: redactSecrets(logText), finishedAt: new Date() },
     });
     await prisma.deployment.update({ where: { id: deploymentId }, data: { status: 'FAILED' } });
+  } finally {
+    if (shimDir) rmSync(shimDir, { recursive: true, force: true });
   }
 }

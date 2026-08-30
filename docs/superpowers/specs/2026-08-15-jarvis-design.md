@@ -45,7 +45,11 @@ These two are scoped and planned as part of this same effort, since Jarvis can't
 
 **Fan-out execution model**: a simple in-process polling loop (checks for pending `PushAttempt` rows every few seconds and processes them), not a job-queue framework like BullMQ. At the expected scale — a handful of deployments, occasional new titles — that's unneeded infrastructure.
 
-**Provisioning execution model**: Jarvis holds **one** SSH keypair for itself (not a distinct key per deployment). An admin authorizes Jarvis's public key on a target box's `authorized_keys` before registering it (out-of-band — however that box was provisioned, e.g. at VM creation via cloud-init, or manually once). Jarvis stores only `sshHost` + `sshUser` per deployment, never a private key. This keeps the credential-storage surface small: one key to rotate, not N.
+**Provisioning execution model**: Jarvis holds **one** SSH keypair for itself (not a distinct key per deployment), generated automatically on first use rather than requiring an operator to create one out-of-band. Jarvis stores only `sshHost` + `sshUser` + `sshPort` per deployment, never a private key or password. This keeps the credential-storage surface small: one key to rotate, not N.
+
+Getting that key trusted on a target is self-serve, in one of two ways: an operator pastes Jarvis's public key (shown in the UI) into the target's `authorized_keys` themselves, or — for a server that starts out password-only, e.g. a freshly created VPS — Jarvis uses a password submitted once through the UI to install its own key via `sshpass`, then immediately discards the password and verifies the key with a fresh key-only connection. Either way, no password is ever persisted; the credential Jarvis holds long-term is always just its own keypair.
+
+`ops/deploy.sh` calls bare `ssh`/`scp` directly and has no flags for a non-default port or a specific identity, since it assumes the invoking user's default SSH setup already works — true for a human operator, not for an unattended process connecting to a server it has never spoken to before. Two problems follow from that: first, a brand-new target's host key isn't in any known_hosts file yet, and deploy.sh has no terminal to answer the interactive "are you sure?" prompt, so the very first deploy to any new server fails outright without a fix. Second, the port and identity Jarvis needs to use are per-deployment, but deploy.sh's `ssh`/`scp` calls are fixed. Since this repo doesn't own `ops/deploy.sh`, Jarvis handles both by generating throwaway `ssh`/`scp` wrapper scripts (`src/lib/ssh-shim.ts`) that inject `StrictHostKeyChecking=accept-new` (trust-on-first-use, into a Jarvis-owned known_hosts file, never the operator's own `~/.ssh/known_hosts`), `BatchMode=yes`, the deployment's port, and Jarvis's identity — then puts that directory first on `PATH` for the one child process `deploy.sh` runs in. Every deploy goes through this, not only password-bootstrapped ones.
 
 **TLS**: none of the branded deployments get real TLS — the network path is already encrypted by the tunnel, and none of them are publicly reachable for a Let's Encrypt HTTP-01 challenge to even work. Every deployment Jarvis provisions uses `ops/deploy.sh`'s existing http mode; the https/certbot branch is never invoked by Jarvis.
 
@@ -53,7 +57,8 @@ These two are scoped and planned as part of this same effort, since Jarvis can't
 
 ```
 Deployment
-  id, name, brandName, baseUrl, sshHost, sshUser
+  id, name, brandName, baseUrl, sshHost, sshUser, sshPort  // sshPort defaults to 22
+  sshKeyInstalledAt    // set once a Test connection or password bootstrap has verified Jarvis's key works
   contentApiKey        // credential Jarvis uses to call this deployment's admin API
   adminEmail            // passed to deploy.sh at provision time
   flussonicBaseUrl
@@ -103,13 +108,13 @@ Four distinct relationships, each with its own credential:
 | You (browser) | Jarvis UI | `JarvisUser` session (email/password login) |
 | FTP watcher (future) | Jarvis ingest API | `JarvisApiKey` (bearer header) |
 | Jarvis | Each deployment's admin API | `Deployment.contentApiKey` (requires the new API-key mechanism in `apps/api`) |
-| Jarvis | Each deployment's OS, for provisioning | Jarvis's own SSH keypair, pre-authorized on the target |
+| Jarvis | Each deployment's OS, for provisioning | Jarvis's own SSH keypair — either pre-authorized on the target by an operator, or self-installed once via a password submitted through the UI (never persisted) |
 
 ## 6. Core flows
 
 **Registering + provisioning a deployment**
-1. Admin adds a `Deployment` in Jarvis (name, brand, SSH host/user, admin email, Flussonic params). Status: `REGISTERED`.
-2. Admin has already put Jarvis's public key in that box's `authorized_keys`.
+1. Admin adds a `Deployment` in Jarvis (name, brand, SSH host/user/port, admin email, Flussonic params). Status: `REGISTERED`.
+2. Admin establishes SSH trust for the target, either by pasting Jarvis's public key into its `authorized_keys` themselves, or by submitting the server's password once so Jarvis installs its own key via `sshpass` and discards the password (§3, Provisioning execution model) — then confirms with Test connection, which sets `sshKeyInstalledAt`.
 3. Admin clicks Deploy. Jarvis sets `Deployment.status = PROVISIONING`, creates a `ProvisionRun`, and spawns `ops/deploy.sh` as a local child process (from a checkout of the OTT repo on Jarvis's own box) targeting the deployment's `sshUser@sshHost` non-interactively (protocol forced to `http`) — `deploy.sh` itself does the SSH/SCP to the target, Jarvis never holds or uses an SSH library directly. Stdout/stderr streams into `ProvisionRun.logText` as it arrives.
 4. Browser polls the run's log endpoint (~every 1-2s) to show live output. Simple polling, not a websocket — matches the "no unneeded infrastructure" approach elsewhere in this design; revisit only if polling proves too laggy in practice.
 5. On success: `Deployment.status = ACTIVE`, `contentApiKey` generated and stored (via the new admin API-key mechanism), `lastProvisionedAt` set. On failure: `status = FAILED`, log retained for diagnosis. Retry safety is more nuanced than "the script is idempotent" (see §8) — `deploy.sh` re-run against an already-set-up target takes a different, non-equivalent code path that prints no fresh admin credential, so a clean retry only works once a `contentApiKey` is already on file for that deployment.
@@ -123,7 +128,7 @@ Four distinct relationships, each with its own credential:
 ## 7. UI pages
 
 1. Login
-2. Deployments — list (name, brand, status, last push, last provisioned) + add/edit form + a per-row "Deploy" action with a live log view
+2. Deployments — list (name, brand, status, last push, last provisioned) + add/edit form + a per-row "Deploy" action with a live log view, plus an SSH access panel (Jarvis's public key, Test connection, password-bootstrap form)
 3. Content log — every `ContentItem` with per-deployment push status; retry action on failures
 4. Manual push — form to submit a title by hand
 

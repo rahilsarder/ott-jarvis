@@ -3,6 +3,7 @@
 import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DeployLogView } from '@/components/DeployLogView';
+import { SshAccessPanel } from '@/components/SshAccessPanel';
 
 interface Deployment {
   id: string;
@@ -11,6 +12,8 @@ interface Deployment {
   baseUrl: string;
   sshHost: string;
   sshUser: string;
+  sshPort: number;
+  sshKeyInstalledAt: string | null;
   adminEmail: string;
   flussonicBaseUrl: string;
   flussonicSecurelinkKey: string;
@@ -25,6 +28,7 @@ const emptyForm = {
   baseUrl: '',
   sshHost: '',
   sshUser: 'root',
+  sshPort: '22',
   adminEmail: '',
   flussonicBaseUrl: '',
   flussonicSecurelinkKey: '',
@@ -35,6 +39,7 @@ export default function DeploymentsPage() {
   const [form, setForm] = useState(emptyForm);
   const [showForm, setShowForm] = useState(false);
   const [activeRuns, setActiveRuns] = useState<Record<string, string>>({});
+  const [sshPanelOpen, setSshPanelOpen] = useState<Record<string, boolean>>({});
 
   const { data: deployments } = useQuery({
     queryKey: ['deployments'],
@@ -100,6 +105,7 @@ export default function DeploymentsPage() {
               ['baseUrl', 'Base URL (http://…)'],
               ['sshHost', 'SSH host'],
               ['sshUser', 'SSH user'],
+              ['sshPort', 'SSH port'],
               ['adminEmail', 'Admin email'],
               ['flussonicBaseUrl', 'Flussonic base URL'],
               ['flussonicSecurelinkKey', 'Flussonic securelink key'],
@@ -126,6 +132,7 @@ export default function DeploymentsPage() {
             <th className="py-2">Name</th>
             <th>Brand</th>
             <th>Status</th>
+            <th>SSH</th>
             <th>Last provisioned</th>
             <th>Last push</th>
             <th></th>
@@ -138,6 +145,14 @@ export default function DeploymentsPage() {
                 <td className="py-2">{d.name}</td>
                 <td>{d.brandName}</td>
                 <td>{d.status}</td>
+                <td>
+                  <button
+                    onClick={() => setSshPanelOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))}
+                    className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium"
+                  >
+                    {d.sshKeyInstalledAt ? 'Key installed' : 'Not verified'}
+                  </button>
+                </td>
                 <td>{d.lastProvisionedAt ?? '—'}</td>
                 <td>{d.lastPushAt ?? '—'}</td>
                 <td>
@@ -152,9 +167,19 @@ export default function DeploymentsPage() {
                   )}
                 </td>
               </tr>
+              {sshPanelOpen[d.id] && (
+                <tr>
+                  <td colSpan={7}>
+                    <SshAccessPanel
+                      deploymentId={d.id}
+                      onInstalled={() => client.invalidateQueries({ queryKey: ['deployments'] })}
+                    />
+                  </td>
+                </tr>
+              )}
               {activeRuns[d.id] && (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     <DeployLogView
                       deploymentId={d.id}
                       runId={activeRuns[d.id]}
