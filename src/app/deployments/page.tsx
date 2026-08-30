@@ -34,12 +34,42 @@ const emptyForm = {
   flussonicSecurelinkKey: '',
 };
 
+type FormState = typeof emptyForm;
+
+const FORM_FIELDS = [
+  ['name', 'Internal name'],
+  ['brandName', 'Brand name'],
+  ['baseUrl', 'Base URL (http://…)'],
+  ['sshHost', 'SSH host'],
+  ['sshUser', 'SSH user'],
+  ['sshPort', 'SSH port'],
+  ['adminEmail', 'Admin email'],
+  ['flussonicBaseUrl', 'Flussonic base URL'],
+  ['flussonicSecurelinkKey', 'Flussonic securelink key'],
+] as const;
+
+function toFormState(d: Deployment): FormState {
+  return {
+    name: d.name,
+    brandName: d.brandName,
+    baseUrl: d.baseUrl,
+    sshHost: d.sshHost,
+    sshUser: d.sshUser,
+    sshPort: String(d.sshPort),
+    adminEmail: d.adminEmail,
+    flussonicBaseUrl: d.flussonicBaseUrl,
+    flussonicSecurelinkKey: d.flussonicSecurelinkKey,
+  };
+}
+
 export default function DeploymentsPage() {
   const client = useQueryClient();
   const [form, setForm] = useState(emptyForm);
   const [showForm, setShowForm] = useState(false);
   const [activeRuns, setActiveRuns] = useState<Record<string, string>>({});
   const [sshPanelOpen, setSshPanelOpen] = useState<Record<string, boolean>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<FormState>(emptyForm);
 
   const { data: deployments } = useQuery({
     queryKey: ['deployments'],
@@ -57,6 +87,22 @@ export default function DeploymentsPage() {
       client.invalidateQueries({ queryKey: ['deployments'] });
       setForm(emptyForm);
       setShowForm(false);
+    },
+  });
+
+  const update = useMutation({
+    mutationFn: (deploymentId: string) =>
+      fetch(`/api/deployments/${deploymentId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editForm),
+      }).then((r) => {
+        if (!r.ok) throw new Error('Update failed');
+        return r.json();
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['deployments'] });
+      setEditingId(null);
     },
   });
 
@@ -98,19 +144,7 @@ export default function DeploymentsPage() {
           }}
           className="space-y-2 rounded border border-neutral-800 p-4"
         >
-          {(
-            [
-              ['name', 'Internal name'],
-              ['brandName', 'Brand name'],
-              ['baseUrl', 'Base URL (http://…)'],
-              ['sshHost', 'SSH host'],
-              ['sshUser', 'SSH user'],
-              ['sshPort', 'SSH port'],
-              ['adminEmail', 'Admin email'],
-              ['flussonicBaseUrl', 'Flussonic base URL'],
-              ['flussonicSecurelinkKey', 'Flussonic securelink key'],
-            ] as const
-          ).map(([key, label]) => (
+          {FORM_FIELDS.map(([key, label]) => (
             <input
               key={key}
               required={key !== 'flussonicSecurelinkKey'}
@@ -155,7 +189,7 @@ export default function DeploymentsPage() {
                 </td>
                 <td>{d.lastProvisionedAt ?? '—'}</td>
                 <td>{d.lastPushAt ?? '—'}</td>
-                <td>
+                <td className="flex gap-2 py-2">
                   {(d.status === 'REGISTERED' || d.status === 'FAILED') && (
                     <button
                       onClick={() => deploy.mutate(d.id)}
@@ -165,8 +199,61 @@ export default function DeploymentsPage() {
                       Deploy
                     </button>
                   )}
+                  {d.status !== 'PROVISIONING' && (
+                    <button
+                      onClick={() => {
+                        setEditingId((current) => (current === d.id ? null : d.id));
+                        setEditForm(toFormState(d));
+                      }}
+                      className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium"
+                    >
+                      {editingId === d.id ? 'Cancel' : 'Edit'}
+                    </button>
+                  )}
                 </td>
               </tr>
+              {editingId === d.id && (
+                <tr>
+                  <td colSpan={7}>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        update.mutate(d.id);
+                      }}
+                      className="mt-2 space-y-2 rounded border border-neutral-800 p-4"
+                    >
+                      {(d.sshHost !== editForm.sshHost ||
+                        d.sshUser !== editForm.sshUser ||
+                        d.sshPort !== Number(editForm.sshPort)) && (
+                        <p className="text-xs text-amber-400">
+                          SSH target changed — saving will mark this deployment unverified and reset it to
+                          REGISTERED, so it needs Test connection (or a password install) and Deploy again.
+                        </p>
+                      )}
+                      {FORM_FIELDS.map(([key, label]) => (
+                        <input
+                          key={key}
+                          required={key !== 'flussonicSecurelinkKey'}
+                          placeholder={label}
+                          value={editForm[key]}
+                          onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
+                          className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none"
+                        />
+                      ))}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="submit"
+                          disabled={update.isPending}
+                          className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+                        >
+                          {update.isPending ? 'Saving…' : 'Save changes'}
+                        </button>
+                        {update.isError && <p className="text-xs text-red-400">Update failed — try again.</p>}
+                      </div>
+                    </form>
+                  </td>
+                </tr>
+              )}
               {sshPanelOpen[d.id] && (
                 <tr>
                   <td colSpan={7}>
