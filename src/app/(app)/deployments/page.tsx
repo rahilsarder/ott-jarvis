@@ -123,7 +123,7 @@ export default function DeploymentsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<FormState>(emptyForm);
 
-  const { data: deployments } = useQuery({
+  const { data: deployments, isLoading } = useQuery({
     queryKey: ['deployments'],
     queryFn: () => fetch('/api/deployments').then((r) => r.json() as Promise<Deployment[]>),
     // Keeps status/lastProvisionedAt/etc. moving in the table itself while a
@@ -161,6 +161,9 @@ export default function DeploymentsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
+      }).then((r) => {
+        if (!r.ok) throw new Error('Registration failed');
+        return r.json();
       }),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ['deployments'] });
@@ -204,14 +207,14 @@ export default function DeploymentsPage() {
             <button
               onClick={() => bulkDeploy.mutate()}
               disabled={bulkDeploy.isPending}
-              className="rounded bg-amber-600 px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+              className="rounded bg-amber-600 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-amber-500 disabled:opacity-60"
             >
               {bulkDeploy.isPending ? 'Updating…' : `Update all (${staleDeployments.length} stale)`}
             </button>
           )}
           <button
             onClick={() => setShowForm((s) => !s)}
-            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium"
+            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-blue-500"
           >
             {showForm ? 'Cancel' : 'Add deployment'}
           </button>
@@ -237,13 +240,18 @@ export default function DeploymentsPage() {
                 placeholder={label}
                 value={form[key]}
                 onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-                className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none"
+                className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
               />
             </div>
           ))}
-          <button type="submit" className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium">
-            Register
+          <button
+            type="submit"
+            disabled={create.isPending}
+            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-blue-500 disabled:opacity-60"
+          >
+            {create.isPending ? 'Registering…' : 'Register'}
           </button>
+          {create.isError && <p className="text-xs text-red-400">Registration failed — try again.</p>}
         </form>
       )}
 
@@ -262,9 +270,23 @@ export default function DeploymentsPage() {
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-800">
+          {isLoading && (
+            <tr>
+              <td colSpan={9} className="py-8 text-center text-neutral-500">
+                Loading deployments…
+              </td>
+            </tr>
+          )}
+          {!isLoading && deployments?.length === 0 && (
+            <tr>
+              <td colSpan={9} className="py-8 text-center text-neutral-500">
+                No deployments yet — click "Add deployment" to register one.
+              </td>
+            </tr>
+          )}
           {deployments?.map((d) => (
             <Fragment key={d.id}>
-              <tr>
+              <tr className="hover:bg-neutral-900/50">
                 <td className="py-2">{d.name}</td>
                 <td>{d.brandName}</td>
                 <td>{d.status}</td>
@@ -294,7 +316,7 @@ export default function DeploymentsPage() {
                 <td>
                   <button
                     onClick={() => setSshPanelOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))}
-                    className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium"
+                    className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium transition-colors hover:bg-neutral-600"
                   >
                     {d.sshKeyInstalledAt ? 'Key installed' : 'Not verified'}
                   </button>
@@ -306,7 +328,7 @@ export default function DeploymentsPage() {
                     <button
                       onClick={() => deploy.mutate(d.id)}
                       disabled={deploy.isPending}
-                      className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium disabled:opacity-60"
+                      className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium transition-colors hover:bg-emerald-500 disabled:opacity-60"
                     >
                       {deployButtonLabel(d)}
                     </button>
@@ -317,14 +339,14 @@ export default function DeploymentsPage() {
                         setEditingId((current) => (current === d.id ? null : d.id));
                         setEditForm(toFormState(d));
                       }}
-                      className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium"
+                      className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium transition-colors hover:bg-neutral-600"
                     >
                       {editingId === d.id ? 'Cancel' : 'Edit'}
                     </button>
                   )}
                   <button
                     onClick={() => setLogPanelOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))}
-                    className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium"
+                    className="rounded bg-neutral-700 px-2 py-1 text-xs font-medium transition-colors hover:bg-neutral-600"
                   >
                     {logPanelOpen[d.id] ? 'Hide log' : 'View log'}
                   </button>
@@ -359,7 +381,7 @@ export default function DeploymentsPage() {
                             placeholder={label}
                             value={editForm[key]}
                             onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
-                            className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none"
+                            className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
                           />
                         </div>
                       ))}
@@ -367,7 +389,7 @@ export default function DeploymentsPage() {
                         <button
                           type="submit"
                           disabled={update.isPending}
-                          className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+                          className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-blue-500 disabled:opacity-60"
                         >
                           {update.isPending ? 'Saving…' : 'Save changes'}
                         </button>

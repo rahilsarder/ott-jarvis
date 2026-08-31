@@ -34,7 +34,7 @@ export default function ContentPage() {
   const client = useQueryClient();
   const [form, setForm] = useState(emptyForm);
 
-  const { data: items } = useQuery({
+  const { data: items, isLoading } = useQuery({
     queryKey: ['content'],
     queryFn: () => fetch('/api/content').then((r) => r.json() as Promise<ContentItemRow[]>),
     // Push status is advanced by the worker out-of-band, so without this a freshly submitted item's
@@ -58,6 +58,9 @@ export default function ContentPage() {
           seasonNumber: form.kind === 'EPISODE' ? Number(form.seasonNumber) : undefined,
           episodeNumber: form.kind === 'EPISODE' ? Number(form.episodeNumber) : undefined,
         }),
+      }).then((r) => {
+        if (!r.ok) throw new Error('Push failed');
+        return r.json();
       }),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ['content'] });
@@ -85,7 +88,7 @@ export default function ContentPage() {
           <select
             value={form.kind}
             onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value as 'MOVIE' | 'EPISODE' }))}
-            className="rounded bg-neutral-900 px-3 py-2 text-sm"
+            className="rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
           >
             <option value="MOVIE">Movie</option>
             <option value="EPISODE">Episode</option>
@@ -95,13 +98,13 @@ export default function ContentPage() {
             placeholder={form.kind === 'MOVIE' ? 'Movie name' : 'Series name'}
             value={form.name}
             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            className="flex-1 rounded bg-neutral-900 px-3 py-2 text-sm"
+            className="flex-1 rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
           />
           <input
             placeholder="Year"
             value={form.year}
             onChange={(e) => setForm((f) => ({ ...f, year: e.target.value }))}
-            className="w-24 rounded bg-neutral-900 px-3 py-2 text-sm"
+            className="w-24 rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
           />
         </div>
         <input
@@ -109,7 +112,7 @@ export default function ContentPage() {
           placeholder="Stream path (e.g. vod/some-movie.mp4)"
           value={form.streamPath}
           onChange={(e) => setForm((f) => ({ ...f, streamPath: e.target.value }))}
-          className="w-full rounded bg-neutral-900 px-3 py-2 text-sm"
+          className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
         />
         {form.kind === 'EPISODE' && (
           <div className="flex gap-2">
@@ -118,25 +121,42 @@ export default function ContentPage() {
               placeholder="Season #"
               value={form.seasonNumber}
               onChange={(e) => setForm((f) => ({ ...f, seasonNumber: e.target.value }))}
-              className="w-28 rounded bg-neutral-900 px-3 py-2 text-sm"
+              className="w-28 rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
             />
             <input
               required
               placeholder="Episode #"
               value={form.episodeNumber}
               onChange={(e) => setForm((f) => ({ ...f, episodeNumber: e.target.value }))}
-              className="w-28 rounded bg-neutral-900 px-3 py-2 text-sm"
+              className="w-28 rounded bg-neutral-900 px-3 py-2 text-sm outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
             />
           </div>
         )}
-        <button type="submit" className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium">
-          Push
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="submit"
+            disabled={submit.isPending}
+            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-blue-500 disabled:opacity-60"
+          >
+            {submit.isPending ? 'Pushing…' : 'Push'}
+          </button>
+          {submit.isError && <p className="text-xs text-red-400">Push failed — check the fields and try again.</p>}
+        </div>
       </form>
+
+      {isLoading && <p className="text-sm text-neutral-500">Loading content…</p>}
+      {!isLoading && items?.length === 0 && (
+        <p className="text-sm text-neutral-500">
+          No content submitted yet — use the form above to push a movie or episode to every active deployment.
+        </p>
+      )}
 
       <div className="space-y-3">
         {items?.map((item) => (
-          <div key={item.id} className="rounded border border-neutral-800 p-3">
+          <div
+            key={item.id}
+            className="rounded border border-neutral-800 p-3 transition-colors hover:border-neutral-700"
+          >
             <p className="text-sm font-medium">
               {item.name}
               {item.year ? ` (${item.year})` : ''}
@@ -162,7 +182,8 @@ export default function ContentPage() {
               {item.pushAttempts.some((pa) => pa.status === 'FAILED') && (
                 <button
                   onClick={() => retry.mutate(item.id)}
-                  className="rounded bg-amber-700 px-2 py-0.5 text-xs font-medium"
+                  disabled={retry.isPending}
+                  className="rounded bg-amber-700 px-2 py-0.5 text-xs font-medium transition-colors hover:bg-amber-600 disabled:opacity-60"
                 >
                   Retry failed
                 </button>

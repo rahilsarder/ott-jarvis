@@ -38,7 +38,7 @@ export default function LoginPage() {
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="w-full rounded bg-neutral-800 px-3 py-2 text-white outline-none"
+          className="w-full rounded bg-neutral-800 px-3 py-2 text-white outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
         />
         <input
           type="password"
@@ -46,13 +46,13 @@ export default function LoginPage() {
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full rounded bg-neutral-800 px-3 py-2 text-white outline-none"
+          className="w-full rounded bg-neutral-800 px-3 py-2 text-white outline-none ring-1 ring-transparent transition-shadow focus:ring-blue-500"
         />
         {error && <p className="text-sm text-red-400">{error}</p>}
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded bg-blue-600 py-2 font-medium text-white disabled:opacity-60"
+          className="w-full rounded bg-blue-600 py-2 font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-60"
         >
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
