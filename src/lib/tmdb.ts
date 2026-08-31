@@ -44,6 +44,22 @@ interface TmdbMovieDetail {
   genres?: { id: number; name: string }[];
 }
 
+interface TmdbTvSearchResult {
+  id: number;
+  name: string;
+  first_air_date?: string;
+}
+
+interface TmdbTvDetail {
+  id: number;
+  name: string;
+  first_air_date?: string;
+  overview?: string;
+  poster_path?: string | null;
+  backdrop_path?: string | null;
+  genres?: { id: number; name: string }[];
+}
+
 function imageUrl(path: string | null | undefined, size: string): string | null {
   return path ? `${IMAGE_CDN}/${size}${path}` : null;
 }
@@ -168,5 +184,41 @@ export async function lookupMovie(
     backdropUrl: backdropUrl(detail.backdrop_path),
     genreNames: detail.genres?.map((g) => g.name) ?? [],
     confident: titlesMatch(detail.title, name) && yearMatches(matchedYear, year),
+  };
+}
+
+/**
+ * TV counterpart to lookupMovie, applied at the series level — episode
+ * pushes carry the series' own artwork/synopsis/genres, not per-episode
+ * TMDB data. Same candidate-picking and confidence rules; only the TMDB
+ * field names differ (name/first_air_date instead of title/release_date),
+ * normalized here so the shared helpers don't need to know about that.
+ */
+export async function lookupSeries(
+  config: TmdbConfig,
+  name: string,
+  year: number | null,
+): Promise<MovieMetadata | null> {
+  const search = await get<{ results?: TmdbTvSearchResult[] }>(config, '/search/tv', {
+    query: name,
+    include_adult: 'false',
+  });
+
+  const normalized = (search.results ?? []).map((r) => ({ id: r.id, title: r.name, release_date: r.first_air_date }));
+  const candidate = pickCandidate(normalized, name, year);
+  if (!candidate) return null;
+
+  const detail = await get<TmdbTvDetail>(config, `/tv/${candidate.id}`, {});
+  const matchedYear = releaseYear(detail.first_air_date);
+
+  return {
+    tmdbId: detail.id,
+    name: detail.name,
+    year: matchedYear,
+    synopsis: detail.overview ?? '',
+    posterUrl: posterUrl(detail.poster_path),
+    backdropUrl: backdropUrl(detail.backdrop_path),
+    genreNames: detail.genres?.map((g) => g.name) ?? [],
+    confident: titlesMatch(detail.name, name) && yearMatches(matchedYear, year),
   };
 }

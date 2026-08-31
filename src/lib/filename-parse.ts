@@ -3,7 +3,30 @@ export interface ParsedMovie {
   year: number | null;
 }
 
-const YEAR_IN_PARENS = /^(.*?)\s*\((\d{4})\)$/;
+export interface ParsedEpisode {
+  name: string;
+  year: number | null;
+  seasonNumber: number;
+  episodeNumber: number;
+}
+
+// Tolerates whitespace inside the parens too — a real folder is literally "Territory ( 2024 )".
+const YEAR_IN_PARENS = /^(.*?)\s*\(\s*(\d{4})\s*\)$/;
+
+const SEASON_EPISODE = /(\d{1,3})x(\d{1,4})/i;
+
+/** Shared by movie and episode parsing: a "Title (Year)" or "Title" folder name, trimmed. */
+function parseTitleYear(segment: string): { name: string; year: number | null } | null {
+  const trimmed = segment.trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(YEAR_IN_PARENS);
+  if (match) {
+    const name = match[1].trim();
+    return name ? { name, year: Number(match[2]) } : null;
+  }
+  return { name: trimmed, year: null };
+}
 
 /**
  * Movie folders are named "Title (Year)" cleanly; release filenames are not
@@ -17,13 +40,32 @@ const YEAR_IN_PARENS = /^(.*?)\s*\((\d{4})\)$/;
 export function parseMoviePath(relativePath: string): ParsedMovie | null {
   const segments = relativePath.split('/');
   if (segments.length < 2) return null;
-  const folder = segments[segments.length - 2].trim();
-  if (!folder) return null;
+  return parseTitleYear(segments[segments.length - 2]);
+}
 
-  const match = folder.match(YEAR_IN_PARENS);
-  if (match) {
-    const name = match[1].trim();
-    return name ? { name, year: Number(match[2]) } : null;
-  }
-  return { name: folder, year: null };
+/**
+ * TV layout is one level deeper than movies: .../Series (Year)/Season N/file.
+ * The series folder (two levels above the file) is trusted for name/year, the
+ * same rule as parseMoviePath. Season and episode both come from the
+ * filename's own "SxE" marker (e.g. "Friends (1994) - 1x10.mp4") rather than
+ * the "Season N" folder — a more specific, per-file signal, and the only one
+ * that also carries the episode number.
+ */
+export function parseEpisodePath(relativePath: string): ParsedEpisode | null {
+  const segments = relativePath.split('/');
+  if (segments.length < 3) return null;
+
+  const series = parseTitleYear(segments[segments.length - 3]);
+  if (!series) return null;
+
+  const filename = segments[segments.length - 1];
+  const match = filename.match(SEASON_EPISODE);
+  if (!match) return null;
+
+  return {
+    name: series.name,
+    year: series.year,
+    seasonNumber: Number(match[1]),
+    episodeNumber: Number(match[2]),
+  };
 }

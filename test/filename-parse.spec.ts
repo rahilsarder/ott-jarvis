@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMoviePath } from '../src/lib/filename-parse';
+import { parseEpisodePath, parseMoviePath } from '../src/lib/filename-parse';
 
 describe('parseMoviePath', () => {
   it('parses a clean title/year folder with a scene-release filename', () => {
@@ -75,5 +75,71 @@ describe('parseMoviePath', () => {
 
   it('returns null when the folder segment is empty', () => {
     expect(parseMoviePath('hollywood/2026//movie.mp4')).toBeNull();
+  });
+});
+
+describe('parseEpisodePath', () => {
+  it('parses a real season of episodes', () => {
+    // Real case: every file in tv-series/Friends (1994)/Season 1/.
+    expect(parseEpisodePath('tv-series/Friends (1994)/Season 1/Friends (1994) - 1x10.mp4')).toEqual({
+      name: 'Friends',
+      year: 1994,
+      seasonNumber: 1,
+      episodeNumber: 10,
+    });
+  });
+
+  it('parses a single-digit, non-zero-padded episode number', () => {
+    // Real case: "Friends (1994) - 1x1.mp4", not "1x01".
+    expect(parseEpisodePath('tv-series/Friends (1994)/Season 1/Friends (1994) - 1x1.mp4')).toEqual({
+      name: 'Friends',
+      year: 1994,
+      seasonNumber: 1,
+      episodeNumber: 1,
+    });
+  });
+
+  it('reads a season into double digits correctly', () => {
+    expect(parseEpisodePath('tv-series/Friends (1994)/Season 10/Friends (1994) - 10x5.mp4')).toEqual({
+      name: 'Friends',
+      year: 1994,
+      seasonNumber: 10,
+      episodeNumber: 5,
+    });
+  });
+
+  it('tolerates whitespace inside the parens around the year', () => {
+    // Real case: the folder is literally "Territory ( 2024 )".
+    expect(parseEpisodePath('tv-series/Territory ( 2024 )/Season 1/Territory - 1x1.mp4')).toEqual({
+      name: 'Territory',
+      year: 2024,
+      seasonNumber: 1,
+      episodeNumber: 1,
+    });
+  });
+
+  it('trims leading/trailing whitespace on the series folder and preserves a colon', () => {
+    // Real case: " A Knight of the Seven Kingdoms (2026) ".
+    expect(
+      parseEpisodePath('tv-series/ A Knight of the Seven Kingdoms (2026) /Season 1/AKOTSK - 1x1.mp4'),
+    ).toEqual({ name: 'A Knight of the Seven Kingdoms', year: 2026, seasonNumber: 1, episodeNumber: 1 });
+  });
+
+  it('handles a series folder with no year at all', () => {
+    // Real case: "My Boss/" with no "(YYYY)" suffix.
+    expect(parseEpisodePath('tv-series/My Boss/Season 1/My Boss - 1x1.mp4')).toEqual({
+      name: 'My Boss',
+      year: null,
+      seasonNumber: 1,
+      episodeNumber: 1,
+    });
+  });
+
+  it('returns null when the filename has no SxE marker', () => {
+    expect(parseEpisodePath('tv-series/Friends (1994)/Season 1/Friends (1994) - episode one.mp4')).toBeNull();
+  });
+
+  it('returns null when there is no series folder to read a title from', () => {
+    expect(parseEpisodePath('Season 1/episode.mp4')).toBeNull();
   });
 });

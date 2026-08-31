@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { lookupMovie, posterUrl, backdropUrl } from '../src/lib/tmdb';
+import { lookupMovie, lookupSeries, posterUrl, backdropUrl } from '../src/lib/tmdb';
 
 const config = { apiKey: 'test-key', language: 'en-US' };
 
@@ -226,5 +226,72 @@ describe('lookupMovie', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({}, 429));
 
     await expect(lookupMovie(config, 'Haseen Dillruba', 2021)).rejects.toThrow(/429/);
+  });
+});
+
+const TV_SEARCH_HIT = { id: 1668, name: 'Friends', first_air_date: '1994-09-22' };
+const TV_DETAIL = {
+  id: 1668,
+  name: 'Friends',
+  first_air_date: '1994-09-22',
+  overview: 'Six young people, on their own and struggling to survive in the real world...',
+  poster_path: '/tv-poster.jpg',
+  backdrop_path: '/tv-backdrop.jpg',
+  genres: [{ id: 35, name: 'Comedy' }],
+};
+
+describe('lookupSeries', () => {
+  it('returns confident metadata when the title and year both match, using TV field names', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [TV_SEARCH_HIT] }))
+      .mockResolvedValueOnce(jsonResponse(TV_DETAIL));
+
+    const result = await lookupSeries(config, 'Friends', 1994);
+
+    expect(result).toEqual({
+      tmdbId: 1668,
+      name: 'Friends',
+      year: 1994,
+      synopsis: 'Six young people, on their own and struggling to survive in the real world...',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/tv-poster.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/tv-backdrop.jpg',
+      genreNames: ['Comedy'],
+      confident: true,
+    });
+  });
+
+  it('searches /search/tv and fetches /tv/:id, not the movie endpoints', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [TV_SEARCH_HIT] }))
+      .mockResolvedValueOnce(jsonResponse(TV_DETAIL));
+
+    await lookupSeries(config, 'Friends', 1994);
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/search/tv');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/tv/1668');
+  });
+
+  it('is unconfident when the top result is a different series', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [{ ...TV_SEARCH_HIT, name: 'Something Else' }] }))
+      .mockResolvedValueOnce(jsonResponse({ ...TV_DETAIL, name: 'Something Else' }));
+
+    const result = await lookupSeries(config, 'Friends', 1994);
+    expect(result?.confident).toBe(false);
+  });
+
+  it('returns null when TMDB has no results at all', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ results: [] }));
+    expect(await lookupSeries(config, 'No Such Show', 2024)).toBeNull();
+  });
+
+  it('is confident on an exact title match when the series folder had no year at all', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [TV_SEARCH_HIT] }))
+      .mockResolvedValueOnce(jsonResponse(TV_DETAIL));
+
+    const result = await lookupSeries(config, 'Friends', null);
+    expect(result?.confident).toBe(true);
   });
 });
