@@ -23,6 +23,14 @@ export interface EpisodeForPush {
   streamPath: string;
   seasonNumber: number;
   episodeNumber: number;
+  /** Series-level metadata — applied only when the series is first created (findOrCreateSeries
+   *  never re-PUTs an existing series), same as a movie's fields on pushMovie. */
+  synopsis?: string;
+  posterUrl?: string | null;
+  backdropUrl?: string | null;
+  genreNames?: string[];
+  /** Defaults to true, same reasoning as MovieForPush.isPublished. */
+  isPublished?: boolean;
 }
 
 export class PushError extends Error {
@@ -179,7 +187,12 @@ export async function pushMovie(
 
 // --- episodes ----------------------------------------------------------------
 
-async function findOrCreateSeries(target: DeploymentTarget, name: string, year?: number | null): Promise<AdminTitleDetail> {
+async function findOrCreateSeries(
+  target: DeploymentTarget,
+  item: EpisodeForPush,
+  genreCache: GenreCache,
+): Promise<AdminTitleDetail> {
+  const { name, year } = item;
   const searchRes = await fetch(`${target.baseUrl}/api/admin/titles?perPage=50&q=${encodeURIComponent(name)}`, {
     headers: headers(target),
   });
@@ -193,6 +206,7 @@ async function findOrCreateSeries(target: DeploymentTarget, name: string, year?:
     return (await detailRes.json()) as AdminTitleDetail;
   }
 
+  const genreIds = item.genreNames?.length ? await resolveGenreIds(target, item.genreNames, genreCache) : undefined;
   const createRes = await fetch(`${target.baseUrl}/api/admin/titles`, {
     method: 'POST',
     headers: headers(target),
@@ -201,7 +215,11 @@ async function findOrCreateSeries(target: DeploymentTarget, name: string, year?:
       slug: slugify(name, year),
       name,
       year: year ?? null,
-      isPublished: true,
+      isPublished: item.isPublished ?? true,
+      ...(item.synopsis !== undefined && { synopsis: item.synopsis }),
+      ...(item.posterUrl !== undefined && { posterUrl: item.posterUrl }),
+      ...(item.backdropUrl !== undefined && { backdropUrl: item.backdropUrl }),
+      ...(genreIds !== undefined && { genreIds }),
     }),
   });
   await assertOk(createRes);
@@ -228,8 +246,12 @@ async function findOrCreateSeason(
   return { id: created.id, episodes: [] };
 }
 
-export async function pushEpisode(target: DeploymentTarget, item: EpisodeForPush): Promise<void> {
-  const series = await findOrCreateSeries(target, item.name, item.year);
+export async function pushEpisode(
+  target: DeploymentTarget,
+  item: EpisodeForPush,
+  genreCache: GenreCache = createGenreCache(),
+): Promise<void> {
+  const series = await findOrCreateSeries(target, item, genreCache);
   const season = await findOrCreateSeason(target, series.id, series.seasons, item.seasonNumber);
   const existingEpisode = season.episodes.find((e) => e.number === item.episodeNumber);
 

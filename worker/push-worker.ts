@@ -38,12 +38,12 @@ async function tick(): Promise<void> {
     // generated row type has no way to narrow through.
     const target = { baseUrl: attempt.deployment.baseUrl, contentApiKey: attempt.deployment.contentApiKey! };
     try {
+      let genreCache = genreCaches.get(attempt.deploymentId);
+      if (!genreCache) {
+        genreCache = createGenreCache();
+        genreCaches.set(attempt.deploymentId, genreCache);
+      }
       if (attempt.contentItem.kind === 'MOVIE') {
-        let genreCache = genreCaches.get(attempt.deploymentId);
-        if (!genreCache) {
-          genreCache = createGenreCache();
-          genreCaches.set(attempt.deploymentId, genreCache);
-        }
         await pushMovie(
           target,
           {
@@ -59,13 +59,22 @@ async function tick(): Promise<void> {
           genreCache,
         );
       } else {
-        await pushEpisode(target, {
-          name: attempt.contentItem.name,
-          year: attempt.contentItem.year,
-          streamPath: attempt.contentItem.streamPath,
-          seasonNumber: attempt.contentItem.seasonNumber!,
-          episodeNumber: attempt.contentItem.episodeNumber!,
-        });
+        await pushEpisode(
+          target,
+          {
+            name: attempt.contentItem.name,
+            year: attempt.contentItem.year,
+            streamPath: attempt.contentItem.streamPath,
+            seasonNumber: attempt.contentItem.seasonNumber!,
+            episodeNumber: attempt.contentItem.episodeNumber!,
+            synopsis: attempt.contentItem.synopsis ?? undefined,
+            posterUrl: attempt.contentItem.posterUrl,
+            backdropUrl: attempt.contentItem.backdropUrl,
+            genreNames: attempt.contentItem.genreNames,
+            isPublished: attempt.contentItem.isPublished,
+          },
+          genreCache,
+        );
       }
       await prisma.pushAttempt.update({
         where: { id: attempt.id },

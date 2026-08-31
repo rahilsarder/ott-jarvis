@@ -37,6 +37,19 @@ class FindVideoFilesTests(unittest.TestCase):
             found = list(scanner.find_video_files(root))
             self.assertEqual(found, ["hollywood/2026/Real Film (2026)/real.mp4"])
 
+    def test_finds_an_episode_under_an_allowlisted_series_category(self):
+        with tempfile.TemporaryDirectory() as root:
+            touch(os.path.join(root, "tv-series", "Friends (1994)", "Season 1", "Friends (1994) - 1x1.mp4"))
+            found = list(scanner.find_video_files(root))
+            self.assertEqual(found, ["tv-series/Friends (1994)/Season 1/Friends (1994) - 1x1.mp4"])
+
+    def test_finds_episodes_under_both_real_series_category_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            touch(os.path.join(root, "tv", "Show (2021)", "Season 1", "ep.mp4"))
+            touch(os.path.join(root, "tv-series", "Show (2021)", "Season 1", "ep.mp4"))
+            found = list(scanner.find_video_files(root))
+            self.assertEqual(len(found), 2)
+
     def test_matches_the_category_case_insensitively(self):
         with tempfile.TemporaryDirectory() as root:
             touch(os.path.join(root, "Bollywood", "2021", "Film (2021)", "f.mp4"))

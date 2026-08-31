@@ -31,10 +31,9 @@ import time
 import urllib.error
 import urllib.request
 
-# Mirrors jarvis: src/lib/ingest.ts MOVIE_CATEGORIES exactly. Jarvis
-# independently re-validates every reported path against its own allowlist,
-# so drift here only wastes a scan cycle rather than mis-ingesting anything —
-# but it should still be kept in sync.
+# Mirrors jarvis: src/lib/ingest.ts's MOVIE_CATEGORIES and SERIES_CATEGORIES exactly. Jarvis
+# independently re-validates every reported path against its own allowlist, so drift here only
+# wastes a scan cycle rather than mis-ingesting anything — but it should still be kept in sync.
 MOVIE_CATEGORIES = {
     "animated",
     "bangladeshi movie",
@@ -46,6 +45,10 @@ MOVIE_CATEGORIES = {
     "pakistani",
     "tamil",
 }
+
+SERIES_CATEGORIES = {"tv", "tv-series"}
+
+CONTENT_CATEGORIES = MOVIE_CATEGORIES | SERIES_CATEGORIES
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".m4v", ".mov", ".ts", ".webm"}
 
@@ -71,7 +74,7 @@ def find_video_files(media_root):
     default rather than scanned.
     """
     for category in sorted(os.listdir(media_root)):
-        if category.lower() not in MOVIE_CATEGORIES:
+        if category.lower() not in CONTENT_CATEGORIES:
             continue
         category_path = os.path.join(media_root, category)
         if not os.path.isdir(category_path):

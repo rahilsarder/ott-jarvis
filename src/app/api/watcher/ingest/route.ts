@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { SESSION_COOKIE, verifySessionToken } from '@/lib/session';
 import { verifyApiKey } from '@/lib/api-key.service';
 import { classifyPath, buildContentItemData } from '@/lib/ingest';
-import { lookupMovie } from '@/lib/tmdb';
+import { lookupMovie, lookupSeries } from '@/lib/tmdb';
 
 type Auth = { via: 'session'; userId: string } | { via: 'apikey'; apiKeyId: string };
 
@@ -43,8 +43,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'unsafe path' }, { status: 400 });
     }
     // Not an error: the agent walks whole category trees and will legitimately encounter
-    // things outside scope (a stray non-video file, tv-series content not yet supported).
-    // 200 tells it to mark the path seen and move on rather than retry.
+    // things outside scope (a stray non-video file, an episode filename with no recognizable
+    // SxE marker). 200 tells it to mark the path seen and move on rather than retry.
     return NextResponse.json({ skipped: true, reason: classification.reason }, { status: 200 });
   }
 
@@ -57,7 +57,12 @@ export async function POST(req: NextRequest) {
   let meta = null;
   if (tmdbApiKey) {
     try {
-      meta = await lookupMovie({ apiKey: tmdbApiKey }, classification.parsed.name, classification.parsed.year);
+      const config = { apiKey: tmdbApiKey };
+      const { name, year } = classification.parsed;
+      // Episode enrichment is series-level (synopsis/artwork/genres shared by every episode of
+      // the show), not per-episode — pushEpisode has no per-episode metadata slot to put more in.
+      meta =
+        classification.kind === 'MOVIE' ? await lookupMovie(config, name, year) : await lookupSeries(config, name, year);
     } catch {
       // Transient (network, rate limit, TMDB outage) — the agent only marks a path seen once
       // ingest succeeds, so a 502 here means it naturally retries on the next scan.
@@ -67,7 +72,7 @@ export async function POST(req: NextRequest) {
 
   const item = await prisma.contentItem.create({
     data: {
-      ...buildContentItemData(sourcePath, classification.parsed, meta),
+      ...buildContentItemData(sourcePath, classification, meta),
       submittedByApiKeyId: auth.via === 'apikey' ? auth.apiKeyId : null,
       submittedByUserId: auth.via === 'session' ? auth.userId : null,
     },

@@ -366,4 +366,92 @@ describe('pushEpisode', () => {
     const createCalls = vi.mocked(fetch).mock.calls.filter(([u, init]) => init?.method === 'POST' && String(u).endsWith('/api/admin/titles'));
     expect(createCalls).toHaveLength(0);
   });
+
+  it('sends series-level metadata and resolved genreIds when creating a new series', async () => {
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      const u = String(url);
+      if (u.includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [], total: 0 }), { status: 200 }));
+      }
+      if (u.endsWith('/api/admin/genres') && (!init || init.method === undefined)) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      if (u.endsWith('/api/admin/genres') && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'genre-comedy' }), { status: 201 }));
+      }
+      if (u.endsWith('/api/admin/titles') && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'series1' }), { status: 201 }));
+      }
+      if (u.endsWith('/series1/seasons')) {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'season1', number: 1 }), { status: 201 }));
+      }
+      if (u.endsWith('/series1/episodes')) {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      throw new Error(`unexpected fetch: ${u} ${init?.method}`);
+    });
+
+    await pushEpisode(target, {
+      name: 'Friends',
+      year: 1994,
+      streamPath: 'tv-series/Friends (1994)/Season 1/Friends (1994) - 1x1.mp4',
+      seasonNumber: 1,
+      episodeNumber: 1,
+      synopsis: 'Six young people...',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/p.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/b.jpg',
+      genreNames: ['Comedy'],
+      isPublished: false,
+    });
+
+    const seriesCreateCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([u, init]) => String(u).endsWith('/api/admin/titles') && init?.method === 'POST');
+    const body = JSON.parse(seriesCreateCall![1]?.body as string);
+    expect(body).toMatchObject({
+      type: 'SERIES',
+      synopsis: 'Six young people...',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/p.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/b.jpg',
+      genreIds: ['genre-comedy'],
+      isPublished: false,
+    });
+  });
+
+  it('does not re-send series metadata when reusing an existing series', async () => {
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      const u = String(url);
+      if (u.includes('/api/admin/titles?')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ items: [{ id: 'series1', name: 'Friends', year: 1994, type: 'SERIES' }] }), {
+            status: 200,
+          }),
+        );
+      }
+      if (u.endsWith('/api/admin/titles/series1')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: 'series1', seasons: [{ id: 'season1', number: 1, episodes: [] }] }), {
+            status: 200,
+          }),
+        );
+      }
+      if (u.endsWith('/series1/episodes')) {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      throw new Error(`unexpected fetch: ${u} ${init?.method}`);
+    });
+
+    await pushEpisode(target, {
+      name: 'Friends',
+      year: 1994,
+      streamPath: 'tv-series/Friends (1994)/Season 1/Friends (1994) - 1x2.mp4',
+      seasonNumber: 1,
+      episodeNumber: 2,
+      genreNames: ['Comedy'],
+    });
+
+    // No genre lookup, no title create — reusing an existing series touches neither.
+    const genreCalls = vi.mocked(fetch).mock.calls.filter(([u]) => String(u).endsWith('/api/admin/genres'));
+    expect(genreCalls).toHaveLength(0);
+  });
 });

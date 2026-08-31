@@ -1,4 +1,4 @@
-import { parseMoviePath, ParsedMovie } from './filename-parse';
+import { parseEpisodePath, parseMoviePath, ParsedEpisode, ParsedMovie } from './filename-parse';
 import type { MovieMetadata } from './tmdb';
 
 /**
@@ -21,14 +21,18 @@ export const MOVIE_CATEGORIES = [
   'tamil',
 ] as const;
 
-/** Present on both roots, but episode parsing is not designed yet — see classifyPath. */
+/** Present on both roots — real layout is .../Series (Year)/Season N/Series (Year) - SxE.ext. */
 export const SERIES_CATEGORIES = ['tv', 'tv-series'] as const;
 
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mkv', 'avi', 'm4v', 'mov', 'ts', 'webm']);
 
 export type Classification =
   | { ok: true; kind: 'MOVIE'; category: string; parsed: ParsedMovie }
-  | { ok: false; reason: 'not-a-content-category' | 'not-a-video' | 'no-title-folder' | 'series-not-supported' | 'unsafe-path' };
+  | { ok: true; kind: 'EPISODE'; category: string; parsed: ParsedEpisode }
+  | {
+      ok: false;
+      reason: 'not-a-content-category' | 'not-a-video' | 'no-title-folder' | 'no-episode-marker' | 'unsafe-path';
+    };
 
 function extensionOf(path: string): string {
   const dot = path.lastIndexOf('.');
@@ -49,35 +53,35 @@ export function classifyPath(relativePath: string): Classification {
 
   const segments = relativePath.split('/');
   const category = segments[0]?.toLowerCase();
+  const isSeries = SERIES_CATEGORIES.some((c) => c === category);
+  const isMovie = MOVIE_CATEGORIES.some((c) => c === category);
+  if (!isSeries && !isMovie) return { ok: false, reason: 'not-a-content-category' };
+  if (!VIDEO_EXTENSIONS.has(extensionOf(relativePath))) return { ok: false, reason: 'not-a-video' };
 
-  if (SERIES_CATEGORIES.some((c) => c === category)) {
-    // Deliberately refused rather than parsed as a movie: no real tv-series path has been
-    // sampled yet, and guessing season/episode structure would put wrong titles on every box.
-    return { ok: false, reason: 'series-not-supported' };
-  }
-  if (!MOVIE_CATEGORIES.some((c) => c === category)) {
-    return { ok: false, reason: 'not-a-content-category' };
-  }
-  if (!VIDEO_EXTENSIONS.has(extensionOf(relativePath))) {
-    return { ok: false, reason: 'not-a-video' };
+  if (isSeries) {
+    // category/Series (Year)/Season N/file.ext — one level deeper than a movie.
+    if (segments.length < 4) return { ok: false, reason: 'no-title-folder' };
+    const parsed = parseEpisodePath(relativePath);
+    if (!parsed) return { ok: false, reason: 'no-episode-marker' };
+    return { ok: true, kind: 'EPISODE', category, parsed };
   }
 
   // A movie must live in its own "Title (Year)" folder; a file dropped straight into a
   // category directory has no folder to take a title from.
   if (segments.length < 3) return { ok: false, reason: 'no-title-folder' };
-
   const parsed = parseMoviePath(relativePath);
   if (!parsed) return { ok: false, reason: 'no-title-folder' };
-
   return { ok: true, kind: 'MOVIE', category, parsed };
 }
 
 export interface ContentItemData {
-  kind: 'MOVIE';
+  kind: 'MOVIE' | 'EPISODE';
   name: string;
   year: number | null;
   streamPath: string;
   sourcePath: string;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
   tmdbId: number | null;
   synopsis: string | null;
   posterUrl: string | null;
@@ -87,27 +91,32 @@ export interface ContentItemData {
 }
 
 /**
- * Merges what the path told us with what TMDB told us.
+ * Merges what the path told us with what TMDB told us (lookupMovie for a
+ * MOVIE classification, lookupSeries — applied at the series level — for an
+ * EPISODE one; the caller picks which one ran).
  *
  * The confidence flag governs two things at once: whether the title goes live,
  * and whose name wins. An unconfident match still carries its artwork and
  * synopsis through (useful to whoever reviews it) but keeps the *parsed* name
- * and year, because adopting a doubtful TMDB title would rename the film on
- * every customer's site at once.
+ * and year, because adopting a doubtful TMDB title would rename the film (or
+ * show) on every customer's site at once.
  */
 export function buildContentItemData(
   sourcePath: string,
-  parsed: ParsedMovie,
+  classification: Extract<Classification, { ok: true }>,
   meta: MovieMetadata | null,
 ): ContentItemData {
   const trusted = meta?.confident === true;
+  const { parsed } = classification;
   return {
-    kind: 'MOVIE',
+    kind: classification.kind,
     name: trusted ? meta.name : parsed.name,
     year: trusted ? meta.year : parsed.year,
     // The FTP tree maps directly onto Flussonic stream paths, so the path is used verbatim.
     streamPath: sourcePath,
     sourcePath,
+    seasonNumber: classification.kind === 'EPISODE' ? classification.parsed.seasonNumber : null,
+    episodeNumber: classification.kind === 'EPISODE' ? classification.parsed.episodeNumber : null,
     tmdbId: meta?.tmdbId ?? null,
     synopsis: meta?.synopsis || null,
     posterUrl: meta?.posterUrl ?? null,

@@ -58,20 +58,48 @@ describe('classifyPath', () => {
     expect(classifyPath('bollywood/loose-file.mp4').ok).toBe(false);
   });
 
-  it('reports series categories as not yet supported rather than mis-ingesting them as movies', () => {
-    const result = classifyPath('tv-series/Some Show/Season 1/S01E01.mkv');
-    expect(result).toEqual({ ok: false, reason: 'series-not-supported' });
-  });
-
   it('rejects a path that escapes the root', () => {
     expect(classifyPath('bollywood/../../etc/passwd.mp4').ok).toBe(false);
     expect(classifyPath('/absolute/bollywood/2021/Film (2021)/f.mp4').ok).toBe(false);
   });
+
+  it('accepts a real episode under an allowlisted series category', () => {
+    expect(classifyPath('tv-series/Friends (1994)/Season 1/Friends (1994) - 1x10.mp4')).toEqual({
+      ok: true,
+      kind: 'EPISODE',
+      category: 'tv-series',
+      parsed: { name: 'Friends', year: 1994, seasonNumber: 1, episodeNumber: 10 },
+    });
+  });
+
+  it('accepts both real series category names', () => {
+    for (const category of ['tv', 'tv-series']) {
+      const result = classifyPath(`${category}/Show (2021)/Season 1/Show (2021) - 1x1.mp4`);
+      expect(result.ok, category).toBe(true);
+    }
+  });
+
+  it('rejects an episode filename with no recognizable SxE marker rather than guessing', () => {
+    // A different naming convention than the one real example we have — refused, not guessed at.
+    expect(classifyPath('tv-series/Some Show/Season 1/S01E01.mkv')).toEqual({
+      ok: false,
+      reason: 'no-episode-marker',
+    });
+  });
+
+  it('rejects a series file with no season folder to sit in', () => {
+    expect(classifyPath('tv-series/Friends (1994)/Friends (1994) - 1x1.mp4').ok).toBe(false);
+  });
 });
 
 describe('buildContentItemData', () => {
-  const parsed = { name: 'Haseen Dillruba', year: 2021 };
   const sourcePath = 'bollywood/2021/Haseen Dillruba (2021)/Haseen.Dillruba.2021.1080p.mp4';
+  const movieClassification = {
+    ok: true as const,
+    kind: 'MOVIE' as const,
+    category: 'bollywood',
+    parsed: { name: 'Haseen Dillruba', year: 2021 },
+  };
 
   const meta = {
     tmdbId: 550,
@@ -85,12 +113,14 @@ describe('buildContentItemData', () => {
   };
 
   it('uses TMDB name, year and artwork on a confident match, and publishes it', () => {
-    expect(buildContentItemData(sourcePath, parsed, meta)).toEqual({
+    expect(buildContentItemData(sourcePath, movieClassification, meta)).toEqual({
       kind: 'MOVIE',
       name: 'Haseen Dillruba',
       year: 2021,
       streamPath: sourcePath,
       sourcePath,
+      seasonNumber: null,
+      episodeNumber: null,
       tmdbId: 550,
       synopsis: 'A wife becomes the prime suspect.',
       posterUrl: 'https://image.tmdb.org/t/p/w500/p.jpg',
@@ -101,14 +131,14 @@ describe('buildContentItemData', () => {
   });
 
   it('keeps the enrichment but withholds publication on an unconfident match', () => {
-    const data = buildContentItemData(sourcePath, parsed, { ...meta, confident: false });
+    const data = buildContentItemData(sourcePath, movieClassification, { ...meta, confident: false });
     expect(data.isPublished).toBe(false);
     expect(data.tmdbId).toBe(550);
   });
 
   it('keeps the parsed name and year when the match is unconfident', () => {
     // Trusting a doubtful TMDB title would rename the film on every customer's site.
-    const data = buildContentItemData(sourcePath, parsed, {
+    const data = buildContentItemData(sourcePath, movieClassification, {
       ...meta,
       name: 'Some Other Film',
       year: 1998,
@@ -119,12 +149,14 @@ describe('buildContentItemData', () => {
   });
 
   it('falls back to the parsed values and stays unpublished when TMDB found nothing', () => {
-    expect(buildContentItemData(sourcePath, parsed, null)).toEqual({
+    expect(buildContentItemData(sourcePath, movieClassification, null)).toEqual({
       kind: 'MOVIE',
       name: 'Haseen Dillruba',
       year: 2021,
       streamPath: sourcePath,
       sourcePath,
+      seasonNumber: null,
+      episodeNumber: null,
       tmdbId: null,
       synopsis: null,
       posterUrl: null,
@@ -136,7 +168,42 @@ describe('buildContentItemData', () => {
 
   it('uses the source path verbatim as the stream path', () => {
     // The FTP tree maps directly onto Flussonic stream paths — no translation.
-    const data = buildContentItemData(sourcePath, parsed, meta);
+    const data = buildContentItemData(sourcePath, movieClassification, meta);
     expect(data.streamPath).toBe(sourcePath);
+  });
+
+  describe('for an episode', () => {
+    const episodeSourcePath = 'tv-series/Friends (1994)/Season 1/Friends (1994) - 1x10.mp4';
+    const episodeClassification = {
+      ok: true as const,
+      kind: 'EPISODE' as const,
+      category: 'tv-series',
+      parsed: { name: 'Friends', year: 1994, seasonNumber: 1, episodeNumber: 10 },
+    };
+    const seriesMeta = {
+      tmdbId: 1668,
+      name: 'Friends',
+      year: 1994,
+      synopsis: 'Six young people...',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/tv-poster.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/tv-backdrop.jpg',
+      genreNames: ['Comedy'],
+      confident: true,
+    };
+
+    it('carries season and episode numbers through', () => {
+      const data = buildContentItemData(episodeSourcePath, episodeClassification, seriesMeta);
+      expect(data.kind).toBe('EPISODE');
+      expect(data.seasonNumber).toBe(1);
+      expect(data.episodeNumber).toBe(10);
+    });
+
+    it('carries series-level artwork through for the episode row', () => {
+      const data = buildContentItemData(episodeSourcePath, episodeClassification, seriesMeta);
+      expect(data.name).toBe('Friends');
+      expect(data.posterUrl).toBe('https://image.tmdb.org/t/p/w500/tv-poster.jpg');
+      expect(data.genreNames).toEqual(['Comedy']);
+      expect(data.isPublished).toBe(true);
+    });
   });
 });
