@@ -5,6 +5,7 @@ const findMany = vi.fn();
 const create = vi.fn();
 const update = vi.fn();
 const findFirst = vi.fn();
+const groupBy = vi.fn();
 
 vi.mock('../src/lib/prisma', () => ({
   prisma: {
@@ -22,6 +23,11 @@ vi.mock('../src/lib/prisma', () => ({
         return findFirst;
       },
     },
+    contentItem: {
+      get groupBy() {
+        return groupBy;
+      },
+    },
   },
 }));
 
@@ -32,6 +38,7 @@ beforeEach(() => {
   create.mockReset();
   update.mockReset();
   findFirst.mockReset();
+  groupBy.mockReset().mockResolvedValue([]);
 });
 
 describe('createApiKey', () => {
@@ -56,8 +63,39 @@ describe('listApiKeys', () => {
       ]),
     );
     const rows = await listApiKeys();
-    expect(rows).toEqual([{ id: 'k1', label: 'watcher', createdAt: null, lastUsedAt: null, revokedAt: null }]);
+    expect(rows).toEqual([
+      { id: 'k1', label: 'watcher', createdAt: null, lastUsedAt: null, revokedAt: null, contentItemCount: 0 },
+    ]);
     expect(findMany.mock.calls[0][0].select).not.toHaveProperty('keyHash');
+  });
+
+  it('merges each key with how many ContentItems it submitted', async () => {
+    findMany.mockResolvedValue([
+      { id: 'k1', label: 'cdn', createdAt: new Date(), lastUsedAt: null, revokedAt: null },
+      { id: 'k2', label: 'cdn2', createdAt: new Date(), lastUsedAt: null, revokedAt: null },
+    ]);
+    groupBy.mockResolvedValue([
+      { submittedByApiKeyId: 'k1', _count: { _all: 7 } },
+      { submittedByApiKeyId: 'k2', _count: { _all: 0 } },
+    ]);
+
+    const rows = await listApiKeys();
+    expect(rows.find((r) => r.id === 'k1')?.contentItemCount).toBe(7);
+    expect(rows.find((r) => r.id === 'k2')?.contentItemCount).toBe(0);
+  });
+
+  it('defaults to zero for a key groupBy never returned a row for', async () => {
+    findMany.mockResolvedValue([{ id: 'k1', label: 'cdn', createdAt: new Date(), lastUsedAt: null, revokedAt: null }]);
+    groupBy.mockResolvedValue([]); // no ContentItem has ever been submitted by any key
+
+    const rows = await listApiKeys();
+    expect(rows[0].contentItemCount).toBe(0);
+  });
+
+  it('skips the groupBy call entirely when there are no keys', async () => {
+    findMany.mockResolvedValue([]);
+    expect(await listApiKeys()).toEqual([]);
+    expect(groupBy).not.toHaveBeenCalled();
   });
 });
 

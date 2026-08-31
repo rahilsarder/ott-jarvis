@@ -13,6 +13,7 @@ export interface ApiKeyRecord {
   createdAt: Date;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
+  contentItemCount: number;
 }
 
 export async function createApiKey(label: string): Promise<CreatedApiKey> {
@@ -22,10 +23,23 @@ export async function createApiKey(label: string): Promise<CreatedApiKey> {
 }
 
 export async function listApiKeys(): Promise<ApiKeyRecord[]> {
-  return prisma.jarvisApiKey.findMany({
+  const keys = await prisma.jarvisApiKey.findMany({
     orderBy: { createdAt: 'desc' },
     select: { id: true, label: true, createdAt: true, lastUsedAt: true, revokedAt: true },
   });
+  if (keys.length === 0) return [];
+
+  // ContentItem.submittedByApiKeyId is a loose id, not a Prisma relation, so this is a
+  // separate aggregate query rather than a nested _count — cheap (one query, grouped) and
+  // is the "is this FTP source actually sending anything" signal an operator wants to see.
+  const counts = await prisma.contentItem.groupBy({
+    by: ['submittedByApiKeyId'],
+    where: { submittedByApiKeyId: { in: keys.map((k) => k.id) } },
+    _count: { _all: true },
+  });
+  const countByKeyId = new Map(counts.map((c) => [c.submittedByApiKeyId, c._count._all]));
+
+  return keys.map((k) => ({ ...k, contentItemCount: countByKeyId.get(k.id) ?? 0 }));
 }
 
 export async function revokeApiKey(id: string): Promise<void> {

@@ -7,6 +7,7 @@ import { useState } from 'react';
 const LINKS = [
   { href: '/deployments', label: 'Deployments' },
   { href: '/content', label: 'Content' },
+  { href: '/sources', label: 'FTP Sources' },
 ] as const;
 
 export function Nav() {
