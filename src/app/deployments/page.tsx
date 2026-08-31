@@ -27,6 +27,22 @@ function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
 
+/**
+ * deploy.sh itself decides fresh-install vs. update by checking whether
+ * .env already exists on the target — there's no separate script or route
+ * for the two. This just labels the same action honestly: "Deploy" only
+ * for a box that's never been successfully provisioned (REGISTERED, or
+ * FAILED with no prior successful run to fall back to); "Update" once
+ * there's a real deployment to pull new code onto, including a FAILED
+ * retry that has a deployedCommit on file from before.
+ */
+function deployButtonLabel(d: Deployment): 'Deploy' | 'Update' | null {
+  if (d.status === 'REGISTERED') return 'Deploy';
+  if (d.status === 'FAILED') return d.deployedCommit ? 'Update' : 'Deploy';
+  if (d.status === 'ACTIVE') return 'Update';
+  return null;
+}
+
 const emptyForm = {
   name: '',
   brandName: '',
@@ -159,7 +175,7 @@ export default function DeploymentsPage() {
               disabled={bulkDeploy.isPending}
               className="rounded bg-amber-600 px-3 py-1.5 text-sm font-medium disabled:opacity-60"
             >
-              {bulkDeploy.isPending ? 'Deploying…' : `Deploy all (${staleDeployments.length} stale)`}
+              {bulkDeploy.isPending ? 'Updating…' : `Update all (${staleDeployments.length} stale)`}
             </button>
           )}
           <button
@@ -239,13 +255,13 @@ export default function DeploymentsPage() {
                 <td>{d.lastProvisionedAt ?? '—'}</td>
                 <td>{d.lastPushAt ?? '—'}</td>
                 <td className="flex gap-2 py-2">
-                  {(d.status === 'REGISTERED' || d.status === 'FAILED') && (
+                  {deployButtonLabel(d) && (
                     <button
                       onClick={() => deploy.mutate(d.id)}
                       disabled={deploy.isPending}
                       className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium disabled:opacity-60"
                     >
-                      Deploy
+                      {deployButtonLabel(d)}
                     </button>
                   )}
                   {d.status !== 'PROVISIONING' && (
