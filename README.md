@@ -47,11 +47,14 @@ both fail either way.
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm exec prisma generate
 pnpm exec prisma migrate deploy
 pnpm build
 pm2 start ops/ecosystem.config.js
 pm2 save
 ```
+
+`pnpm exec prisma generate` is required, not optional — `prisma migrate deploy` applies migrations but does not regenerate the client (unlike `migrate dev`, which does both), and pnpm no longer runs `@prisma/client`'s own postinstall hook by default. Skipping it means the app builds and runs against a stale, previously-generated client — any field added since the last generate throws `Unknown argument` on first use, exactly like the OTT platform's `ops/deploy.sh` update path did before it got the same fix. The same gap bites local dev too: after any `prisma migrate dev` that isn't run from a hot fresh `pnpm dev` process, restart the dev server — it doesn't pick up a regenerated client via hot reload, since `node_modules` isn't watched.
 
 ## Registering a new server
 
