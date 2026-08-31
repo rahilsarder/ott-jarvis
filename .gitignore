@@ -3,3 +3,7 @@ node_modules/
 .env
 *.tsbuildinfo
 .worktrees/
+
+# Python watcher agent
+watcher-agent/__pycache__/
+*.pyc
