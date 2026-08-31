@@ -18,8 +18,13 @@ interface Deployment {
   flussonicBaseUrl: string;
   flussonicSecurelinkKey: string;
   status: string;
+  deployedCommit: string | null;
   lastProvisionedAt: string | null;
   lastPushAt: string | null;
+}
+
+function shortSha(sha: string): string {
+  return sha.slice(0, 7);
 }
 
 const emptyForm = {
@@ -79,6 +84,30 @@ export default function DeploymentsPage() {
     refetchInterval: (query) => (query.state.data?.some((d) => d.status === 'PROVISIONING') ? 2000 : false),
   });
 
+  const { data: mainHead } = useQuery({
+    queryKey: ['main-head'],
+    queryFn: () => fetch('/api/main-head').then((r) => r.json() as Promise<{ sha: string | null }>),
+    staleTime: 60_000,
+  });
+
+  const staleDeployments =
+    deployments?.filter((d) => d.status === 'ACTIVE' && mainHead?.sha && d.deployedCommit !== mainHead.sha) ?? [];
+
+  const bulkDeploy = useMutation({
+    mutationFn: () =>
+      fetch('/api/deployments/bulk-deploy', { method: 'POST' }).then(
+        (r) => r.json() as Promise<{ triggered: string[] }>,
+      ),
+    onSuccess: (data) => {
+      client.invalidateQueries({ queryKey: ['deployments'] });
+      setLogPanelOpen((prev) => {
+        const next = { ...prev };
+        for (const id of data.triggered) next[id] = true;
+        return next;
+      });
+    },
+  });
+
   const create = useMutation({
     mutationFn: () =>
       fetch('/api/deployments', {
@@ -123,12 +152,23 @@ export default function DeploymentsPage() {
     <main className="mx-auto max-w-4xl p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Deployments</h1>
-        <button
-          onClick={() => setShowForm((s) => !s)}
-          className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium"
-        >
-          {showForm ? 'Cancel' : 'Add deployment'}
-        </button>
+        <div className="flex items-center gap-2">
+          {staleDeployments.length > 0 && (
+            <button
+              onClick={() => bulkDeploy.mutate()}
+              disabled={bulkDeploy.isPending}
+              className="rounded bg-amber-600 px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+            >
+              {bulkDeploy.isPending ? 'Deploying…' : `Deploy all (${staleDeployments.length} stale)`}
+            </button>
+          )}
+          <button
+            onClick={() => setShowForm((s) => !s)}
+            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium"
+          >
+            {showForm ? 'Cancel' : 'Add deployment'}
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -161,6 +201,7 @@ export default function DeploymentsPage() {
             <th className="py-2">Name</th>
             <th>Brand</th>
             <th>Status</th>
+            <th>Version</th>
             <th>SSH</th>
             <th>Last provisioned</th>
             <th>Last push</th>
@@ -174,6 +215,19 @@ export default function DeploymentsPage() {
                 <td className="py-2">{d.name}</td>
                 <td>{d.brandName}</td>
                 <td>{d.status}</td>
+                <td>
+                  {d.status === 'ACTIVE' && d.deployedCommit ? (
+                    mainHead?.sha && d.deployedCommit !== mainHead.sha ? (
+                      <span className="text-amber-400" title={`deployed ${d.deployedCommit}, main is ${mainHead.sha}`}>
+                        {shortSha(d.deployedCommit)} · stale
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400">{shortSha(d.deployedCommit)} · up to date</span>
+                    )
+                  ) : (
+                    <span className="text-neutral-500">—</span>
+                  )}
+                </td>
                 <td>
                   <button
                     onClick={() => setSshPanelOpen((prev) => ({ ...prev, [d.id]: !prev[d.id] }))}
@@ -215,7 +269,7 @@ export default function DeploymentsPage() {
               </tr>
               {editingId === d.id && (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -257,7 +311,7 @@ export default function DeploymentsPage() {
               )}
               {sshPanelOpen[d.id] && (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <SshAccessPanel
                       deploymentId={d.id}
                       onInstalled={() => client.invalidateQueries({ queryKey: ['deployments'] })}
@@ -267,7 +321,7 @@ export default function DeploymentsPage() {
               )}
               {logPanelOpen[d.id] && (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <DeployLogView
                       deploymentId={d.id}
                       onSettled={() => client.invalidateQueries({ queryKey: ['deployments'] })}

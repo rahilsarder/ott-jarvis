@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDeployInvocation, parseAdminPassword } from '../src/lib/deploy-command';
+import { buildDeployInvocation, parseAdminPassword, parseDeployedCommit } from '../src/lib/deploy-command';
 
 const deployment = {
   sshHost: '10.0.0.5',
@@ -52,5 +52,25 @@ describe('parseAdminPassword', () => {
 
   it('returns null when the line is absent', () => {
     expect(parseAdminPassword('some unrelated output')).toBeNull();
+  });
+});
+
+describe('parseDeployedCommit', () => {
+  it('extracts the commit sha from deploy.sh\'s marker line', () => {
+    const log = ['Cloning into \'.\'...', 'Deployed commit: 4f2a9c1b8e3d7a6f5c0b1e2d3a4f5c6b7d8e9f0a', 'pm2 reloaded'].join(
+      '\n',
+    );
+    expect(parseDeployedCommit(log)).toBe('4f2a9c1b8e3d7a6f5c0b1e2d3a4f5c6b7d8e9f0a');
+  });
+
+  it('returns the last occurrence when the marker appears more than once', () => {
+    const log = ['Deployed commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'Deployed commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'].join(
+      '\n',
+    );
+    expect(parseDeployedCommit(log)).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+  });
+
+  it('returns null when the line is absent', () => {
+    expect(parseDeployedCommit('some unrelated output')).toBeNull();
   });
 });

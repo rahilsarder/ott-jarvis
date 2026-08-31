@@ -30,6 +30,7 @@ model Deployment {
   flussonicBaseUrl       String
   flussonicSecurelinkKey String           @default("")
   status                 DeploymentStatus @default(REGISTERED)
+  deployedCommit         String?
   lastProvisionedAt      DateTime?
   lastPushAt             DateTime?
   createdAt              DateTime         @default(now())

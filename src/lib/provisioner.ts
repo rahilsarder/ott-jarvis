@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { prisma } from './prisma';
-import { buildDeployInvocation, parseAdminPassword } from './deploy-command';
+import { buildDeployInvocation, parseAdminPassword, parseDeployedCommit } from './deploy-command';
 import { defaultKnownHostsPath, ensureKnownHostsDir, resolveSshIdentity } from './ssh-identity';
 import { pathWithShim, writeKeyAuthShim } from './ssh-shim';
 
@@ -143,7 +143,7 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
         });
         await prisma.deployment.update({
           where: { id: deploymentId },
-          data: { status: 'ACTIVE', lastProvisionedAt: new Date() },
+          data: { status: 'ACTIVE', lastProvisionedAt: new Date(), deployedCommit: parseDeployedCommit(logText) },
         });
         return;
       }
@@ -208,7 +208,12 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
     });
     await prisma.deployment.update({
       where: { id: deploymentId },
-      data: { status: 'ACTIVE', contentApiKey, lastProvisionedAt: new Date() },
+      data: {
+        status: 'ACTIVE',
+        contentApiKey,
+        lastProvisionedAt: new Date(),
+        deployedCommit: parseDeployedCommit(logText),
+      },
     });
   } catch (err) {
     // Belt-and-suspenders: whatever stage threw (initial lookup, missing OTT_REPO_PATH, spawn setup,
