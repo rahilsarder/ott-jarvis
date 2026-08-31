@@ -7,6 +7,11 @@ export interface MovieForPush {
   name: string;
   year?: number | null;
   streamPath: string;
+  synopsis?: string;
+  posterUrl?: string | null;
+  backdropUrl?: string | null;
+  logoUrl?: string | null;
+  genreNames?: string[];
 }
 
 export interface EpisodeForPush {
@@ -21,6 +26,8 @@ export class PushError extends Error {
   constructor(
     public status: number,
     public body: string,
+    /** Parsed from a 429's Retry-After header (seconds → ms). Undefined for every other case. */
+    public retryAfterMs?: number,
   ) {
     super(`Push failed with status ${status}: ${body}`);
   }
@@ -40,24 +47,18 @@ function headers(target: DeploymentTarget): Record<string, string> {
   return { 'Content-Type': 'application/json', 'X-Api-Key': target.contentApiKey };
 }
 
-async function assertOk(res: Response): Promise<void> {
-  if (!res.ok) throw new PushError(res.status, await res.text());
+/** Retry-After is defined in seconds by RFC 9110; not all servers send it. */
+function parseRetryAfterMs(res: Response): number | undefined {
+  const header = res.headers.get('retry-after');
+  if (!header) return undefined;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
 }
 
-export async function pushMovie(target: DeploymentTarget, item: MovieForPush): Promise<void> {
-  const res = await fetch(`${target.baseUrl}/api/admin/titles`, {
-    method: 'POST',
-    headers: headers(target),
-    body: JSON.stringify({
-      type: 'MOVIE',
-      slug: slugify(item.name, item.year),
-      name: item.name,
-      year: item.year ?? null,
-      streamPath: item.streamPath,
-      isPublished: true,
-    }),
-  });
-  await assertOk(res);
+async function assertOk(res: Response): Promise<void> {
+  if (res.ok) return;
+  const retryAfterMs = res.status === 429 ? parseRetryAfterMs(res) : undefined;
+  throw new PushError(res.status, await res.text(), retryAfterMs);
 }
 
 interface AdminTitleRow {
@@ -71,6 +72,109 @@ interface AdminTitleDetail {
   id: string;
   seasons: { id: string; number: number; episodes: { id: string; number: number }[] }[];
 }
+
+// --- genres --------------------------------------------------------------
+
+/**
+ * genreIds on a title are deployment-local cuids, not portable names — this
+ * resolves human-readable names to a specific box's ids, creating any that
+ * don't exist yet there. Scope the cache to one worker tick (or one manual
+ * push) via createGenreCache(); reusing it across pushes to the same
+ * deployment avoids re-fetching the whole genre list per title.
+ */
+export interface GenreCache {
+  loaded: boolean;
+  byName: Map<string, string>;
+}
+
+export function createGenreCache(): GenreCache {
+  return { loaded: false, byName: new Map() };
+}
+
+async function ensureGenreCacheLoaded(target: DeploymentTarget, cache: GenreCache): Promise<void> {
+  if (cache.loaded) return;
+  const res = await fetch(`${target.baseUrl}/api/admin/genres`, { headers: headers(target) });
+  await assertOk(res);
+  const genres = (await res.json()) as { id: string; name: string }[];
+  for (const g of genres) cache.byName.set(g.name, g.id);
+  cache.loaded = true;
+}
+
+export async function resolveGenreIds(
+  target: DeploymentTarget,
+  genreNames: string[],
+  cache: GenreCache,
+): Promise<string[]> {
+  if (genreNames.length === 0) return [];
+  await ensureGenreCacheLoaded(target, cache);
+
+  const ids: string[] = [];
+  for (const name of genreNames) {
+    let id = cache.byName.get(name);
+    if (!id) {
+      const res = await fetch(`${target.baseUrl}/api/admin/genres`, {
+        method: 'POST',
+        headers: headers(target),
+        body: JSON.stringify({ name, slug: slugify(name) }),
+      });
+      await assertOk(res);
+      const created = (await res.json()) as { id: string };
+      id = created.id;
+      cache.byName.set(name, id);
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
+// --- movies ----------------------------------------------------------------
+
+async function findMovie(target: DeploymentTarget, name: string, year?: number | null): Promise<{ id: string } | null> {
+  const res = await fetch(`${target.baseUrl}/api/admin/titles?perPage=50&q=${encodeURIComponent(name)}`, {
+    headers: headers(target),
+  });
+  await assertOk(res);
+  const page = (await res.json()) as { items: AdminTitleRow[] };
+  const match = page.items.find((row) => row.type === 'MOVIE' && row.name === name && row.year === (year ?? null));
+  return match ? { id: match.id } : null;
+}
+
+/**
+ * POST /admin/titles is create-only — assertSlugFree rejects a repeat slug
+ * with a 400 that never clears. A watcher rescan, a retry after a partial
+ * push, or simply pushing the same title twice would 400 forever without
+ * this find-first-then-PUT step (pushEpisode already does the equivalent
+ * for series/season below; movies were the one inconsistent path).
+ */
+export async function pushMovie(
+  target: DeploymentTarget,
+  item: MovieForPush,
+  genreCache: GenreCache = createGenreCache(),
+): Promise<void> {
+  const genreIds = item.genreNames?.length ? await resolveGenreIds(target, item.genreNames, genreCache) : undefined;
+
+  const body = JSON.stringify({
+    type: 'MOVIE',
+    slug: slugify(item.name, item.year),
+    name: item.name,
+    year: item.year ?? null,
+    streamPath: item.streamPath,
+    isPublished: true,
+    ...(item.synopsis !== undefined && { synopsis: item.synopsis }),
+    ...(item.posterUrl !== undefined && { posterUrl: item.posterUrl }),
+    ...(item.backdropUrl !== undefined && { backdropUrl: item.backdropUrl }),
+    ...(item.logoUrl !== undefined && { logoUrl: item.logoUrl }),
+    ...(genreIds !== undefined && { genreIds }),
+  });
+
+  const existing = await findMovie(target, item.name, item.year);
+  const res = existing
+    ? await fetch(`${target.baseUrl}/api/admin/titles/${existing.id}`, { method: 'PUT', headers: headers(target), body })
+    : await fetch(`${target.baseUrl}/api/admin/titles`, { method: 'POST', headers: headers(target), body });
+  await assertOk(res);
+}
+
+// --- episodes ----------------------------------------------------------------
 
 async function findOrCreateSeries(target: DeploymentTarget, name: string, year?: number | null): Promise<AdminTitleDetail> {
   const searchRes = await fetch(`${target.baseUrl}/api/admin/titles?perPage=50&q=${encodeURIComponent(name)}`, {

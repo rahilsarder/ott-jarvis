@@ -1,9 +1,12 @@
 import { prisma } from '../src/lib/prisma';
-import { pushEpisode, pushMovie, PushError } from '../src/lib/deployment-client';
+import { createGenreCache, GenreCache, pushEpisode, pushMovie, PushError } from '../src/lib/deployment-client';
 import { MAX_RETRIES, nextRetryDelayMs } from '../src/lib/retry';
 
 const POLL_INTERVAL_MS = 5000;
 const BATCH_SIZE = 20;
+/** A 429's own Retry-After is honored as-is above this, but never below it — protects against a
+ * degenerate `Retry-After: 0` (or a buggy target) causing a tight retry loop. */
+const MIN_RATE_LIMIT_RETRY_MS = 5000;
 /** See reconcileStaleProvisionRuns() for why this is 2 minutes. */
 const STALE_PROVISION_RUN_MS = 2 * 60 * 1000;
 
@@ -26,17 +29,30 @@ async function tick(): Promise<void> {
     include: { contentItem: true, deployment: true },
   });
 
+  // Scoped to one tick's batch, keyed by deployment: several items pushed to the same box in the
+  // same batch share one genre-list fetch instead of repeating it per title.
+  const genreCaches = new Map<string, GenreCache>();
+
   for (const attempt of due) {
     // Non-null by construction — the query filters on contentApiKey: { not: null }, which Prisma's
     // generated row type has no way to narrow through.
     const target = { baseUrl: attempt.deployment.baseUrl, contentApiKey: attempt.deployment.contentApiKey! };
     try {
       if (attempt.contentItem.kind === 'MOVIE') {
-        await pushMovie(target, {
-          name: attempt.contentItem.name,
-          year: attempt.contentItem.year,
-          streamPath: attempt.contentItem.streamPath,
-        });
+        let genreCache = genreCaches.get(attempt.deploymentId);
+        if (!genreCache) {
+          genreCache = createGenreCache();
+          genreCaches.set(attempt.deploymentId, genreCache);
+        }
+        await pushMovie(
+          target,
+          {
+            name: attempt.contentItem.name,
+            year: attempt.contentItem.year,
+            streamPath: attempt.contentItem.streamPath,
+          },
+          genreCache,
+        );
       } else {
         await pushEpisode(target, {
           name: attempt.contentItem.name,
@@ -54,6 +70,13 @@ async function tick(): Promise<void> {
     } catch (err) {
       const retryCount = attempt.retryCount + 1;
       const failed = retryCount > MAX_RETRIES;
+      // A 429 means "you personally are going too fast right now" — a data/logic problem it is not,
+      // so it gets the server's own requested wait instead of being lumped in with a genuine failure
+      // and given the same fixed backoff tier a broken push would get.
+      const rateLimitedMs =
+        err instanceof PushError && err.status === 429 && err.retryAfterMs !== undefined
+          ? Math.max(err.retryAfterMs, MIN_RATE_LIMIT_RETRY_MS)
+          : undefined;
       await prisma.pushAttempt.update({
         where: { id: attempt.id },
         data: {
@@ -66,7 +89,7 @@ async function tick(): Promise<void> {
           // pre-increment attempt number: the first failure (retryCount 0) waits 30s, the second 120s,
           // the third 600s. `retryCount` above is the post-increment running total that gets stored;
           // passing that in here skipped the 30s tier entirely on every first retry.
-          nextRetryAt: failed ? null : new Date(Date.now() + nextRetryDelayMs(attempt.retryCount)),
+          nextRetryAt: failed ? null : new Date(Date.now() + (rateLimitedMs ?? nextRetryDelayMs(attempt.retryCount))),
         },
       });
     }

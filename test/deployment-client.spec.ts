@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { pushEpisode, pushMovie, slugify } from '../src/lib/deployment-client';
+import { createGenreCache, pushEpisode, pushMovie, PushError, resolveGenreIds, slugify } from '../src/lib/deployment-client';
 
 describe('slugify', () => {
   it('lowercases, hyphenates, and appends the year', () => {
@@ -19,11 +19,17 @@ describe('pushMovie', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('POSTs the movie with the X-Api-Key header', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 201 }));
+  it('POSTs the movie with the X-Api-Key header, after searching and finding nothing', async () => {
+    vi.mocked(fetch).mockImplementation((url) => {
+      if (String(url).includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ id: 'movie1' }), { status: 201 }));
+    });
     await pushMovie(target, { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie.mp4' });
 
-    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    const createCall = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST');
+    const [url, init] = createCall!;
     expect(url).toBe('http://dep.local/api/admin/titles');
     expect(init?.headers).toMatchObject({ 'X-Api-Key': 'key123' });
     const body = JSON.parse(init?.body as string);
@@ -42,6 +48,227 @@ describe('pushMovie', () => {
     await expect(
       pushMovie(target, { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie.mp4' }),
     ).rejects.toThrow();
+  });
+
+  it('searches first, and PUTs the existing movie instead of creating a duplicate', async () => {
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      const u = String(url);
+      if (u.includes('/api/admin/titles?')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ items: [{ id: 'movie1', name: 'Some Movie', year: 2024, type: 'MOVIE' }] }),
+            { status: 200 },
+          ),
+        );
+      }
+      if (u.endsWith('/api/admin/titles/movie1') && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'movie1' }), { status: 200 }));
+      }
+      throw new Error(`unexpected fetch: ${u} ${init?.method}`);
+    });
+
+    await pushMovie(target, { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie-v2.mp4' });
+
+    const createCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([u, init]) => init?.method === 'POST' && String(u).endsWith('/api/admin/titles'));
+    expect(createCalls).toHaveLength(0);
+  });
+
+  it('re-pushing the same movie twice succeeds both times (idempotent)', async () => {
+    let created = false;
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      const u = String(url);
+      if (u.includes('/api/admin/titles?')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ items: created ? [{ id: 'movie1', name: 'Some Movie', year: 2024, type: 'MOVIE' }] : [] }), {
+            status: 200,
+          }),
+        );
+      }
+      if (u.endsWith('/api/admin/titles') && init?.method === 'POST') {
+        created = true;
+        return Promise.resolve(new Response(JSON.stringify({ id: 'movie1' }), { status: 201 }));
+      }
+      if (u.endsWith('/api/admin/titles/movie1') && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'movie1' }), { status: 200 }));
+      }
+      throw new Error(`unexpected fetch: ${u} ${init?.method}`);
+    });
+
+    const item = { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie.mp4' };
+    await expect(pushMovie(target, item)).resolves.not.toThrow();
+    await expect(pushMovie(target, item)).resolves.not.toThrow();
+  });
+
+  it('forwards optional metadata when provided', async () => {
+    vi.mocked(fetch).mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ id: 'movie1' }), { status: 201 }));
+    });
+
+    await pushMovie(target, {
+      name: 'Some Movie',
+      year: 2024,
+      streamPath: 'vod/some-movie.mp4',
+      synopsis: 'A movie about things.',
+      posterUrl: 'https://example.com/poster.jpg',
+      backdropUrl: 'https://example.com/backdrop.jpg',
+    });
+
+    const createCall = vi.mocked(fetch).mock.calls.find(([u, init]) => init?.method === 'POST');
+    const body = JSON.parse((createCall![1]?.body as string) ?? '{}');
+    expect(body).toMatchObject({
+      synopsis: 'A movie about things.',
+      posterUrl: 'https://example.com/poster.jpg',
+      backdropUrl: 'https://example.com/backdrop.jpg',
+    });
+  });
+
+  it('omits metadata fields that were not provided, rather than sending them as undefined/null', async () => {
+    vi.mocked(fetch).mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ id: 'movie1' }), { status: 201 }));
+    });
+
+    await pushMovie(target, { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie.mp4' });
+
+    const createCall = vi.mocked(fetch).mock.calls.find(([u, init]) => init?.method === 'POST');
+    const body = JSON.parse((createCall![1]?.body as string) ?? '{}');
+    expect(body).not.toHaveProperty('synopsis');
+    expect(body).not.toHaveProperty('posterUrl');
+    expect(body).not.toHaveProperty('genreIds');
+  });
+});
+
+describe('resolveGenreIds', () => {
+  const target = { baseUrl: 'http://dep.local', contentApiKey: 'key123' };
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('resolves names already present on the target to their existing ids', async () => {
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      if (String(url).endsWith('/api/admin/genres') && (!init || init.method === undefined)) {
+        return Promise.resolve(
+          new Response(JSON.stringify([{ id: 'g1', name: 'Drama' }, { id: 'g2', name: 'Thriller' }]), {
+            status: 200,
+          }),
+        );
+      }
+      throw new Error(`unexpected fetch: ${String(url)} ${init?.method}`);
+    });
+
+    const ids = await resolveGenreIds(target, ['Drama', 'Thriller'], createGenreCache());
+    expect(ids).toEqual(['g1', 'g2']);
+  });
+
+  it('creates a genre that does not exist yet on the target', async () => {
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      const u = String(url);
+      if (u.endsWith('/api/admin/genres') && init?.method !== 'POST') {
+        return Promise.resolve(new Response(JSON.stringify([{ id: 'g1', name: 'Drama' }]), { status: 200 }));
+      }
+      if (u.endsWith('/api/admin/genres') && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'g-new', name: 'Sci-Fi' }), { status: 201 }));
+      }
+      throw new Error(`unexpected fetch: ${u} ${init?.method}`);
+    });
+
+    const ids = await resolveGenreIds(target, ['Drama', 'Sci-Fi'], createGenreCache());
+    expect(ids).toEqual(['g1', 'g-new']);
+  });
+
+  it('only fetches the genre list once across multiple calls sharing a cache', async () => {
+    const listFetches: string[] = [];
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      const u = String(url);
+      if (u.endsWith('/api/admin/genres') && init?.method !== 'POST') {
+        listFetches.push(u);
+        return Promise.resolve(new Response(JSON.stringify([{ id: 'g1', name: 'Drama' }]), { status: 200 }));
+      }
+      throw new Error(`unexpected fetch: ${u} ${init?.method}`);
+    });
+
+    const cache = createGenreCache();
+    await resolveGenreIds(target, ['Drama'], cache);
+    await resolveGenreIds(target, ['Drama'], cache);
+    expect(listFetches).toHaveLength(1);
+  });
+
+  it('returns an empty array without any fetch when given no genre names', async () => {
+    vi.mocked(fetch).mockImplementation(() => {
+      throw new Error('should not fetch');
+    });
+    expect(await resolveGenreIds(target, [], createGenreCache())).toEqual([]);
+  });
+});
+
+describe('PushError / rate limiting', () => {
+  const target = { baseUrl: 'http://dep.local', contentApiKey: 'key123' };
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('captures Retry-After (seconds) as retryAfterMs on a 429', async () => {
+    vi.mocked(fetch).mockImplementation((url) => {
+      if (String(url).includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response('slow down', { status: 429, headers: { 'Retry-After': '5' } }));
+    });
+
+    try {
+      await pushMovie(target, { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie.mp4' });
+      expect.unreachable('expected pushMovie to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(PushError);
+      expect((err as PushError).status).toBe(429);
+      expect((err as PushError).retryAfterMs).toBe(5000);
+    }
+  });
+
+  it('leaves retryAfterMs undefined when there is no Retry-After header', async () => {
+    vi.mocked(fetch).mockImplementation((url) => {
+      if (String(url).includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response('slow down', { status: 429 }));
+    });
+
+    try {
+      await pushMovie(target, { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie.mp4' });
+      expect.unreachable('expected pushMovie to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(PushError);
+      expect((err as PushError).status).toBe(429);
+      expect((err as PushError).retryAfterMs).toBeUndefined();
+    }
+  });
+
+  it('leaves retryAfterMs undefined for a non-429 error', async () => {
+    vi.mocked(fetch).mockImplementation((url) => {
+      if (String(url).includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response('bad', { status: 400 }));
+    });
+    try {
+      await pushMovie(target, { name: 'Some Movie', year: 2024, streamPath: 'vod/some-movie.mp4' });
+      expect.unreachable('expected pushMovie to throw');
+    } catch (err) {
+      expect((err as PushError).retryAfterMs).toBeUndefined();
+    }
   });
 });
 
