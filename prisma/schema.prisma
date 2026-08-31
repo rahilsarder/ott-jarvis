@@ -54,10 +54,24 @@ model ContentItem {
   streamPath          String
   seasonNumber        Int?
   episodeNumber       Int?
-  sourcePath          String?
+  // Unique so a watcher agent re-reporting a file it has already sent (a rescan, a restart, an
+  // at-least-once retry) is a no-op instead of a duplicate fan-out to every deployment.
+  sourcePath          String?     @unique
   submittedAt         DateTime    @default(now())
   submittedByApiKeyId String?
   submittedByUserId   String?
+
+  // TMDB enrichment, resolved once here at ingest rather than per deployment: one lookup per title
+  // regardless of how many boxes it fans out to, identical metadata everywhere, and a push retry
+  // never re-hits TMDB.
+  tmdbId      Int?
+  synopsis    String?
+  posterUrl   String?
+  backdropUrl String?
+  genreNames  String[]
+  // False when the title could not be confidently identified. It still fans out to every
+  // deployment, but lands unpublished so a mis-identification is never customer-visible.
+  isPublished Boolean  @default(true)
 
   pushAttempts PushAttempt[]
 }

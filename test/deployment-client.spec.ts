@@ -43,6 +43,25 @@ describe('pushMovie', () => {
     });
   });
 
+  it('sends isPublished: false when the caller passes it, instead of always defaulting true', async () => {
+    vi.mocked(fetch).mockImplementation((url) => {
+      if (String(url).includes('/api/admin/titles?')) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ id: 'movie1' }), { status: 201 }));
+    });
+    await pushMovie(target, {
+      name: 'Some Movie',
+      year: 2024,
+      streamPath: 'vod/some-movie.mp4',
+      isPublished: false,
+    });
+
+    const createCall = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST');
+    const body = JSON.parse(createCall![1]?.body as string);
+    expect(body.isPublished).toBe(false);
+  });
+
   it('throws on a non-ok response', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response('bad request', { status: 400 }));
     await expect(

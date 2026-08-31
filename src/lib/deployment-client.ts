@@ -12,6 +12,9 @@ export interface MovieForPush {
   backdropUrl?: string | null;
   logoUrl?: string | null;
   genreNames?: string[];
+  /** Defaults to true so every pre-existing caller (manual /content submissions) keeps
+   *  publishing immediately; the FTP watcher is the one caller that passes false. */
+  isPublished?: boolean;
 }
 
 export interface EpisodeForPush {
@@ -159,7 +162,7 @@ export async function pushMovie(
     name: item.name,
     year: item.year ?? null,
     streamPath: item.streamPath,
-    isPublished: true,
+    isPublished: item.isPublished ?? true,
     ...(item.synopsis !== undefined && { synopsis: item.synopsis }),
     ...(item.posterUrl !== undefined && { posterUrl: item.posterUrl }),
     ...(item.backdropUrl !== undefined && { backdropUrl: item.backdropUrl }),

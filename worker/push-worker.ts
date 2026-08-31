@@ -50,6 +50,11 @@ async function tick(): Promise<void> {
             name: attempt.contentItem.name,
             year: attempt.contentItem.year,
             streamPath: attempt.contentItem.streamPath,
+            synopsis: attempt.contentItem.synopsis ?? undefined,
+            posterUrl: attempt.contentItem.posterUrl,
+            backdropUrl: attempt.contentItem.backdropUrl,
+            genreNames: attempt.contentItem.genreNames,
+            isPublished: attempt.contentItem.isPublished,
           },
           genreCache,
         );
