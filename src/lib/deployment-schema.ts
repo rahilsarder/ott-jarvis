@@ -10,6 +10,12 @@ export const createDeploymentSchema = z.object({
   adminEmail: z.string().email(),
   flussonicBaseUrl: z.string().url(),
   flussonicSecurelinkKey: z.string().max(500).default(''),
+  licenseExpiresAt: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? new Date(v) : null))
+    .refine((v) => v === null || !Number.isNaN(v.getTime()), { message: 'Invalid date' }),
 });
 export type CreateDeploymentInput = z.infer<typeof createDeploymentSchema>;
 

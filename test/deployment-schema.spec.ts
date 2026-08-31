@@ -47,4 +47,22 @@ describe('createDeploymentSchema', () => {
   it('rejects an invalid adminEmail', () => {
     expect(createDeploymentSchema.safeParse({ ...valid, adminEmail: 'not-an-email' }).success).toBe(false);
   });
+
+  it('defaults licenseExpiresAt to null when omitted', () => {
+    expect(createDeploymentSchema.parse(valid).licenseExpiresAt).toBeNull();
+  });
+
+  it('treats an empty licenseExpiresAt string the same as omitted', () => {
+    expect(createDeploymentSchema.parse({ ...valid, licenseExpiresAt: '' }).licenseExpiresAt).toBeNull();
+  });
+
+  it('parses a valid licenseExpiresAt date string into a Date', () => {
+    const result = createDeploymentSchema.parse({ ...valid, licenseExpiresAt: '2027-01-15' });
+    expect(result.licenseExpiresAt).toBeInstanceOf(Date);
+    expect(result.licenseExpiresAt?.toISOString().slice(0, 10)).toBe('2027-01-15');
+  });
+
+  it('rejects an unparseable licenseExpiresAt', () => {
+    expect(createDeploymentSchema.safeParse({ ...valid, licenseExpiresAt: 'not-a-date' }).success).toBe(false);
+  });
 });

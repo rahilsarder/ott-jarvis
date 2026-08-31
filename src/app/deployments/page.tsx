@@ -4,6 +4,7 @@ import { Fragment, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DeployLogView } from '@/components/DeployLogView';
 import { SshAccessPanel } from '@/components/SshAccessPanel';
+import { getLicenseStatus } from '@/lib/license';
 
 interface Deployment {
   id: string;
@@ -19,9 +20,24 @@ interface Deployment {
   flussonicSecurelinkKey: string;
   status: string;
   deployedCommit: string | null;
+  licenseExpiresAt: string | null;
   lastProvisionedAt: string | null;
   lastPushAt: string | null;
 }
+
+const LICENSE_LABEL: Record<ReturnType<typeof getLicenseStatus>, (date: string) => string> = {
+  none: () => '—',
+  ok: (date) => `Expires ${date}`,
+  soon: (date) => `Expires ${date} (soon)`,
+  expired: (date) => `Expired ${date}`,
+};
+
+const LICENSE_COLOR: Record<ReturnType<typeof getLicenseStatus>, string> = {
+  none: 'text-neutral-500',
+  ok: 'text-emerald-400',
+  soon: 'text-amber-400',
+  expired: 'text-red-400',
+};
 
 function shortSha(sha: string): string {
   return sha.slice(0, 7);
@@ -53,21 +69,34 @@ const emptyForm = {
   adminEmail: '',
   flussonicBaseUrl: '',
   flussonicSecurelinkKey: '',
+  licenseExpiresAt: '',
 };
 
 type FormState = typeof emptyForm;
 
 const FORM_FIELDS = [
-  ['name', 'Internal name'],
-  ['brandName', 'Brand name'],
-  ['baseUrl', 'Base URL (http://…)'],
-  ['sshHost', 'SSH host'],
-  ['sshUser', 'SSH user'],
-  ['sshPort', 'SSH port'],
-  ['adminEmail', 'Admin email'],
-  ['flussonicBaseUrl', 'Flussonic base URL'],
-  ['flussonicSecurelinkKey', 'Flussonic securelink key'],
+  ['name', 'Internal name', 'text'],
+  ['brandName', 'Brand name', 'text'],
+  ['baseUrl', 'Base URL (http://…)', 'text'],
+  ['sshHost', 'SSH host', 'text'],
+  ['sshUser', 'SSH user', 'text'],
+  ['sshPort', 'SSH port', 'text'],
+  ['adminEmail', 'Admin email', 'text'],
+  ['flussonicBaseUrl', 'Flussonic base URL', 'text'],
+  ['flussonicSecurelinkKey', 'Flussonic securelink key', 'text'],
+  ['licenseExpiresAt', 'License expires', 'date'],
 ] as const;
+
+const REQUIRED_FIELDS: ReadonlySet<string> = new Set([
+  'name',
+  'brandName',
+  'baseUrl',
+  'sshHost',
+  'sshUser',
+  'sshPort',
+  'adminEmail',
+  'flussonicBaseUrl',
+]);
 
 function toFormState(d: Deployment): FormState {
   return {
@@ -80,6 +109,8 @@ function toFormState(d: Deployment): FormState {
     adminEmail: d.adminEmail,
     flussonicBaseUrl: d.flussonicBaseUrl,
     flussonicSecurelinkKey: d.flussonicSecurelinkKey,
+    // Native date inputs need YYYY-MM-DD; the API returns a full ISO timestamp.
+    licenseExpiresAt: d.licenseExpiresAt ? d.licenseExpiresAt.slice(0, 10) : '',
   };
 }
 
@@ -195,15 +226,20 @@ export default function DeploymentsPage() {
           }}
           className="space-y-2 rounded border border-neutral-800 p-4"
         >
-          {FORM_FIELDS.map(([key, label]) => (
-            <input
-              key={key}
-              required={key !== 'flussonicSecurelinkKey'}
-              placeholder={label}
-              value={form[key]}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-              className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none"
-            />
+          {FORM_FIELDS.map(([key, label, type]) => (
+            <div key={key}>
+              {/* Native date inputs don't render a text placeholder, so this is
+                  the only field that needs an actual visible label. */}
+              {type === 'date' && <label className="mb-1 block text-xs text-neutral-400">{label}</label>}
+              <input
+                required={REQUIRED_FIELDS.has(key)}
+                type={type}
+                placeholder={label}
+                value={form[key]}
+                onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none"
+              />
+            </div>
           ))}
           <button type="submit" className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium">
             Register
@@ -218,6 +254,7 @@ export default function DeploymentsPage() {
             <th>Brand</th>
             <th>Status</th>
             <th>Version</th>
+            <th>License</th>
             <th>SSH</th>
             <th>Last provisioned</th>
             <th>Last push</th>
@@ -243,6 +280,16 @@ export default function DeploymentsPage() {
                   ) : (
                     <span className="text-neutral-500">—</span>
                   )}
+                </td>
+                <td>
+                  {(() => {
+                    const status = getLicenseStatus(d.licenseExpiresAt);
+                    return (
+                      <span className={LICENSE_COLOR[status]}>
+                        {LICENSE_LABEL[status](d.licenseExpiresAt?.slice(0, 10) ?? '')}
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td>
                   <button
@@ -285,7 +332,7 @@ export default function DeploymentsPage() {
               </tr>
               {editingId === d.id && (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -301,15 +348,20 @@ export default function DeploymentsPage() {
                           REGISTERED, so it needs Test connection (or a password install) and Deploy again.
                         </p>
                       )}
-                      {FORM_FIELDS.map(([key, label]) => (
-                        <input
-                          key={key}
-                          required={key !== 'flussonicSecurelinkKey'}
-                          placeholder={label}
-                          value={editForm[key]}
-                          onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
-                          className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none"
-                        />
+                      {FORM_FIELDS.map(([key, label, type]) => (
+                        <div key={key}>
+                          {type === 'date' && (
+                            <label className="mb-1 block text-xs text-neutral-400">{label}</label>
+                          )}
+                          <input
+                            required={REQUIRED_FIELDS.has(key)}
+                            type={type}
+                            placeholder={label}
+                            value={editForm[key]}
+                            onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
+                            className="w-full rounded bg-neutral-900 px-3 py-2 text-sm outline-none"
+                          />
+                        </div>
                       ))}
                       <div className="flex items-center gap-2">
                         <button
@@ -327,7 +379,7 @@ export default function DeploymentsPage() {
               )}
               {sshPanelOpen[d.id] && (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <SshAccessPanel
                       deploymentId={d.id}
                       onInstalled={() => client.invalidateQueries({ queryKey: ['deployments'] })}
@@ -337,7 +389,7 @@ export default function DeploymentsPage() {
               )}
               {logPanelOpen[d.id] && (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <DeployLogView
                       deploymentId={d.id}
                       onSettled={() => client.invalidateQueries({ queryKey: ['deployments'] })}
