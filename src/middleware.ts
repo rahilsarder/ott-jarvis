@@ -12,7 +12,8 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // Excludes /login, /api/auth/*, /api/content (dual-auth, checked in-route),
-  // static assets, and Next internals.
-  matcher: ['/((?!login|api/auth|api/content|_next/static|_next/image|favicon.ico).*)'],
+  // Excludes /login, /api/auth/*, /api/content and /api/watcher (both dual-auth, checked
+  // in-route — the latter is the machine-only path scanner agents POST to), static assets,
+  // and Next internals.
+  matcher: ['/((?!login|api/auth|api/content|api/watcher|_next/static|_next/image|favicon.ico).*)'],
 };
