@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { lookupMovie, lookupSeries, posterUrl, backdropUrl } from '../src/lib/tmdb';
+import { getTitleDetail, lookupMovie, lookupSeries, posterUrl, backdropUrl, searchTitles } from '../src/lib/tmdb';
 
 const config = { apiKey: 'test-key', language: 'en-US' };
 
@@ -293,5 +293,86 @@ describe('lookupSeries', () => {
 
     const result = await lookupSeries(config, 'Friends', null);
     expect(result?.confident).toBe(true);
+  });
+});
+
+describe('searchTitles', () => {
+  it('returns a normalized list for a movie search, without a second request', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [{ ...SEARCH_HIT, poster_path: '/poster.jpg', overview: 'A synopsis.' }] }));
+
+    const results = await searchTitles(config, 'movie', 'Haseen Dillruba');
+
+    expect(results).toEqual([
+      {
+        tmdbId: 550,
+        name: 'Haseen Dillruba',
+        year: 2021,
+        posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
+        overview: 'A synopsis.',
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/search/movie');
+  });
+
+  it('returns a normalized list for a tv search using TV field names', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      jsonResponse({ results: [{ ...TV_SEARCH_HIT, poster_path: '/tv.jpg', overview: 'Six friends.' }] }),
+    );
+
+    const results = await searchTitles(config, 'tv', 'Friends');
+
+    expect(results).toEqual([
+      { tmdbId: 1668, name: 'Friends', year: 1994, posterUrl: 'https://image.tmdb.org/t/p/w500/tv.jpg', overview: 'Six friends.' },
+    ]);
+  });
+
+  it('returns an empty list rather than throwing when TMDB has no results', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ results: [] }));
+    expect(await searchTitles(config, 'movie', 'Nothing Like This Exists')).toEqual([]);
+  });
+
+  it('handles a missing poster and overview without crashing', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      jsonResponse({ results: [{ id: 1, title: 'Bare Result' }] }),
+    );
+    const results = await searchTitles(config, 'movie', 'Bare Result');
+    expect(results).toEqual([{ tmdbId: 1, name: 'Bare Result', year: null, posterUrl: null, overview: '' }]);
+  });
+});
+
+describe('getTitleDetail', () => {
+  it('returns full metadata for a movie, with no confidence field', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse(DETAIL));
+
+    const detail = await getTitleDetail(config, 'movie', 550);
+
+    expect(detail).toEqual({
+      tmdbId: 550,
+      name: 'Haseen Dillruba',
+      year: 2021,
+      synopsis: 'A wife becomes the prime suspect in her husband’s murder.',
+      posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg',
+      genreNames: ['Crime', 'Mystery'],
+    });
+    expect(detail).not.toHaveProperty('confident');
+  });
+
+  it('returns full metadata for a tv series, fetching /tv/:id', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse(TV_DETAIL));
+
+    const detail = await getTitleDetail(config, 'tv', 1668);
+
+    expect(detail.name).toBe('Friends');
+    expect(detail.genreNames).toEqual(['Comedy']);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/tv/1668');
+  });
+
+  it('throws on a non-ok response, same as lookupMovie', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({}, 404));
+    await expect(getTitleDetail(config, 'movie', 999999)).rejects.toThrow(/404/);
   });
 });

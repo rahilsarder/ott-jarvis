@@ -10,6 +10,8 @@ const BACKDROP_SIZE = 'w1280';
  *  (festival vs. wide release, regional staggering), so one year of slack still counts as a match. */
 const YEAR_TOLERANCE = 1;
 
+export type TmdbKind = 'movie' | 'tv';
+
 export interface TmdbConfig {
   apiKey: string;
   language?: string;
@@ -28,10 +30,26 @@ export interface MovieMetadata {
   confident: boolean;
 }
 
+/** List-view result for a human-driven search (the manual /content search panel) — cheaper than
+ *  MovieMetadata since it's built entirely from one search request, no per-result detail fetch. */
+export interface SearchHit {
+  tmdbId: number;
+  name: string;
+  year: number | null;
+  posterUrl: string | null;
+  overview: string;
+}
+
+/** Full detail for a title a human has already picked — same shape as MovieMetadata minus
+ *  `confident`, since a human selecting a specific result *is* the confidence signal. */
+export type TitleDetail = Omit<MovieMetadata, 'confident'>;
+
 interface TmdbSearchResult {
   id: number;
   title: string;
   release_date?: string;
+  poster_path?: string | null;
+  overview?: string;
 }
 
 interface TmdbMovieDetail {
@@ -48,6 +66,8 @@ interface TmdbTvSearchResult {
   id: number;
   name: string;
   first_air_date?: string;
+  poster_path?: string | null;
+  overview?: string;
 }
 
 interface TmdbTvDetail {
@@ -58,6 +78,21 @@ interface TmdbTvDetail {
   poster_path?: string | null;
   backdrop_path?: string | null;
   genres?: { id: number; name: string }[];
+}
+
+/** Normalized shape both movie and tv search/detail responses are mapped into, so everything
+ *  downstream (candidate-picking, the public search/detail exports) is kind-agnostic. */
+interface NormalizedResult {
+  id: number;
+  title: string;
+  releaseDate?: string;
+  posterPath?: string | null;
+  overview?: string;
+}
+
+interface NormalizedDetail extends NormalizedResult {
+  backdropPath?: string | null;
+  genreNames: string[];
 }
 
 function imageUrl(path: string | null | undefined, size: string): string | null {
@@ -113,14 +148,10 @@ function yearMatches(candidateYear: number | null, wantedYear: number | null): b
  * word. Prefer an exact title match at the right year, then any exact title
  * match, and only then fall back to TMDB's own ranking.
  */
-function pickCandidate(
-  results: TmdbSearchResult[],
-  name: string,
-  year: number | null,
-): TmdbSearchResult | undefined {
+function pickCandidate(results: NormalizedResult[], name: string, year: number | null): NormalizedResult | undefined {
   const titleMatches = results.filter((r) => titlesMatch(r.title, name));
   return (
-    titleMatches.find((r) => yearMatches(releaseYear(r.release_date), year)) ?? titleMatches[0] ?? results[0]
+    titleMatches.find((r) => yearMatches(releaseYear(r.releaseDate), year)) ?? titleMatches[0] ?? results[0]
   );
 }
 
@@ -149,42 +180,84 @@ async function get<T>(config: TmdbConfig, path: string, params: Record<string, s
   }
 }
 
-/**
- * Resolves a parsed folder title to TMDB metadata, reporting whether the match
- * is trustworthy. Returns null only when TMDB knows of nothing by that name;
- * a doubtful match still comes back (with `confident: false`) so the caller can
- * ingest it unpublished instead of dropping it on the floor.
- */
-export async function lookupMovie(
-  config: TmdbConfig,
-  name: string,
-  year: number | null,
-): Promise<MovieMetadata | null> {
+async function rawSearch(config: TmdbConfig, kind: TmdbKind, query: string): Promise<NormalizedResult[]> {
+  if (kind === 'movie') {
+    const res = await get<{ results?: TmdbSearchResult[] }>(config, '/search/movie', { query, include_adult: 'false' });
+    return (res.results ?? []).map((r) => ({
+      id: r.id,
+      title: r.title,
+      releaseDate: r.release_date,
+      posterPath: r.poster_path,
+      overview: r.overview,
+    }));
+  }
+  const res = await get<{ results?: TmdbTvSearchResult[] }>(config, '/search/tv', { query, include_adult: 'false' });
+  return (res.results ?? []).map((r) => ({
+    id: r.id,
+    title: r.name,
+    releaseDate: r.first_air_date,
+    posterPath: r.poster_path,
+    overview: r.overview,
+  }));
+}
+
+async function rawDetail(config: TmdbConfig, kind: TmdbKind, tmdbId: number): Promise<NormalizedDetail> {
+  if (kind === 'movie') {
+    const d = await get<TmdbMovieDetail>(config, `/movie/${tmdbId}`, {});
+    return {
+      id: d.id,
+      title: d.title,
+      releaseDate: d.release_date,
+      overview: d.overview,
+      posterPath: d.poster_path,
+      backdropPath: d.backdrop_path,
+      genreNames: d.genres?.map((g) => g.name) ?? [],
+    };
+  }
+  const d = await get<TmdbTvDetail>(config, `/tv/${tmdbId}`, {});
+  return {
+    id: d.id,
+    title: d.name,
+    releaseDate: d.first_air_date,
+    overview: d.overview,
+    posterPath: d.poster_path,
+    backdropPath: d.backdrop_path,
+    genreNames: d.genres?.map((g) => g.name) ?? [],
+  };
+}
+
+async function lookupTitle(config: TmdbConfig, kind: TmdbKind, name: string, year: number | null): Promise<MovieMetadata | null> {
   // Deliberately unfiltered by year. Verified against the live API: constraining with
   // primary_release_year returns *zero* results whenever the library's folder year and TMDB's
-  // release year differ by even one ("Cinemaa Zindabad" is 2021 on TMDB, 2022 on disk), which is
+  // release year differ by even one ("Cinemaa Zindabad" is 2021 on TMDB but 2022 on disk), which is
   // common enough to lose real titles. The year is used to rank candidates below instead.
-  const search = await get<{ results?: TmdbSearchResult[] }>(config, '/search/movie', {
-    query: name,
-    include_adult: 'false',
-  });
-
-  const candidate = pickCandidate(search.results ?? [], name, year);
+  const results = await rawSearch(config, kind, name);
+  const candidate = pickCandidate(results, name, year);
   if (!candidate) return null;
 
-  const detail = await get<TmdbMovieDetail>(config, `/movie/${candidate.id}`, {});
-  const matchedYear = releaseYear(detail.release_date);
+  const detail = await rawDetail(config, kind, candidate.id);
+  const matchedYear = releaseYear(detail.releaseDate);
 
   return {
     tmdbId: detail.id,
     name: detail.title,
     year: matchedYear,
     synopsis: detail.overview ?? '',
-    posterUrl: posterUrl(detail.poster_path),
-    backdropUrl: backdropUrl(detail.backdrop_path),
-    genreNames: detail.genres?.map((g) => g.name) ?? [],
+    posterUrl: posterUrl(detail.posterPath),
+    backdropUrl: backdropUrl(detail.backdropPath),
+    genreNames: detail.genreNames,
     confident: titlesMatch(detail.title, name) && yearMatches(matchedYear, year),
   };
+}
+
+/**
+ * Resolves a parsed folder title to TMDB metadata, reporting whether the match
+ * is trustworthy. Returns null only when TMDB knows of nothing by that name;
+ * a doubtful match still comes back (with `confident: false`) so the caller can
+ * ingest it unpublished instead of dropping it on the floor.
+ */
+export function lookupMovie(config: TmdbConfig, name: string, year: number | null): Promise<MovieMetadata | null> {
+  return lookupTitle(config, 'movie', name, year);
 }
 
 /**
@@ -192,33 +265,40 @@ export async function lookupMovie(
  * pushes carry the series' own artwork/synopsis/genres, not per-episode
  * TMDB data. Same candidate-picking and confidence rules; only the TMDB
  * field names differ (name/first_air_date instead of title/release_date),
- * normalized here so the shared helpers don't need to know about that.
+ * normalized in rawSearch/rawDetail so this doesn't need to know about that.
  */
-export async function lookupSeries(
-  config: TmdbConfig,
-  name: string,
-  year: number | null,
-): Promise<MovieMetadata | null> {
-  const search = await get<{ results?: TmdbTvSearchResult[] }>(config, '/search/tv', {
-    query: name,
-    include_adult: 'false',
-  });
+export function lookupSeries(config: TmdbConfig, name: string, year: number | null): Promise<MovieMetadata | null> {
+  return lookupTitle(config, 'tv', name, year);
+}
 
-  const normalized = (search.results ?? []).map((r) => ({ id: r.id, title: r.name, release_date: r.first_air_date }));
-  const candidate = pickCandidate(normalized, name, year);
-  if (!candidate) return null;
+/**
+ * Human-driven search for the manual /content upload form — the OTT admin panel's "search TMDB,
+ * pick a result" flow, adapted for Jarvis. No confidence heuristic: the admin picking a specific
+ * result *is* the confidence signal, so this returns every candidate for them to choose from
+ * rather than picking one automatically.
+ */
+export async function searchTitles(config: TmdbConfig, kind: TmdbKind, query: string): Promise<SearchHit[]> {
+  const results = await rawSearch(config, kind, query);
+  return results.map((r) => ({
+    tmdbId: r.id,
+    name: r.title,
+    year: releaseYear(r.releaseDate),
+    posterUrl: posterUrl(r.posterPath),
+    overview: r.overview ?? '',
+  }));
+}
 
-  const detail = await get<TmdbTvDetail>(config, `/tv/${candidate.id}`, {});
-  const matchedYear = releaseYear(detail.first_air_date);
-
+/** Full metadata for a title the admin has already picked from searchTitles — genre names in
+ *  particular require this second call, since TMDB's search results only carry genre ids. */
+export async function getTitleDetail(config: TmdbConfig, kind: TmdbKind, tmdbId: number): Promise<TitleDetail> {
+  const detail = await rawDetail(config, kind, tmdbId);
   return {
     tmdbId: detail.id,
-    name: detail.name,
-    year: matchedYear,
+    name: detail.title,
+    year: releaseYear(detail.releaseDate),
     synopsis: detail.overview ?? '',
-    posterUrl: posterUrl(detail.poster_path),
-    backdropUrl: backdropUrl(detail.backdrop_path),
-    genreNames: detail.genres?.map((g) => g.name) ?? [],
-    confident: titlesMatch(detail.name, name) && yearMatches(matchedYear, year),
+    posterUrl: posterUrl(detail.posterPath),
+    backdropUrl: backdropUrl(detail.backdropPath),
+    genreNames: detail.genreNames,
   };
 }
