@@ -6,6 +6,14 @@ import { DeployLogView } from '@/components/DeployLogView';
 import { SshAccessPanel } from '@/components/SshAccessPanel';
 import { getLicenseStatus } from '@/lib/license';
 
+interface ContentStatus {
+  total: number;
+  success: number;
+  pending: number;
+  failed: number;
+  missing: number;
+}
+
 interface Deployment {
   id: string;
   name: string;
@@ -23,6 +31,7 @@ interface Deployment {
   licenseExpiresAt: string | null;
   lastProvisionedAt: string | null;
   lastPushAt: string | null;
+  contentStatus: ContentStatus;
 }
 
 const LICENSE_LABEL: Record<ReturnType<typeof getLicenseStatus>, (date: string) => string> = {
@@ -198,6 +207,15 @@ export default function DeploymentsPage() {
     },
   });
 
+  // Backstops the automatic sync that fires when a deployment becomes ACTIVE (see provisioner.ts)
+  // for any other reason a deployment could drift behind — a sync that failed to fire, content
+  // submitted while this box was PAUSED. Refetches on success so the missing count (and the
+  // worker's own PENDING pickup, next tick) is visible without a manual reload.
+  const syncContent = useMutation({
+    mutationFn: (deploymentId: string) => fetch(`/api/deployments/${deploymentId}/sync-content`, { method: 'POST' }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['deployments'] }),
+  });
+
   return (
     <main className="mx-auto max-w-4xl p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -264,6 +282,7 @@ export default function DeploymentsPage() {
             <th>Version</th>
             <th>License</th>
             <th>SSH</th>
+            <th>Content</th>
             <th>Last provisioned</th>
             <th>Last push</th>
             <th></th>
@@ -272,14 +291,14 @@ export default function DeploymentsPage() {
         <tbody className="divide-y divide-neutral-800">
           {isLoading && (
             <tr>
-              <td colSpan={9} className="py-8 text-center text-neutral-500">
+              <td colSpan={10} className="py-8 text-center text-neutral-500">
                 Loading deployments…
               </td>
             </tr>
           )}
           {!isLoading && deployments?.length === 0 && (
             <tr>
-              <td colSpan={9} className="py-8 text-center text-neutral-500">
+              <td colSpan={10} className="py-8 text-center text-neutral-500">
                 No deployments yet — click "Add deployment" to register one.
               </td>
             </tr>
@@ -321,6 +340,28 @@ export default function DeploymentsPage() {
                     {d.sshKeyInstalledAt ? 'Key installed' : 'Not verified'}
                   </button>
                 </td>
+                <td>
+                  {d.contentStatus.total === 0 ? (
+                    <span className="text-neutral-500">—</span>
+                  ) : (
+                    <span
+                      className={d.contentStatus.missing > 0 || d.contentStatus.failed > 0 ? 'text-amber-400' : 'text-neutral-300'}
+                      title={`${d.contentStatus.success} pushed, ${d.contentStatus.pending} pending, ${d.contentStatus.failed} failed, ${d.contentStatus.missing} missing`}
+                    >
+                      {d.contentStatus.success}/{d.contentStatus.total}
+                      {d.contentStatus.missing > 0 && ` (${d.contentStatus.missing} missing)`}
+                    </span>
+                  )}
+                  {d.status === 'ACTIVE' && d.contentStatus.missing > 0 && (
+                    <button
+                      onClick={() => syncContent.mutate(d.id)}
+                      disabled={syncContent.isPending}
+                      className="ml-2 rounded bg-amber-700 px-2 py-0.5 text-xs font-medium transition-colors hover:bg-amber-600 disabled:opacity-60"
+                    >
+                      {syncContent.isPending ? 'Syncing…' : `Sync missing (${d.contentStatus.missing})`}
+                    </button>
+                  )}
+                </td>
                 <td>{d.lastProvisionedAt ?? '—'}</td>
                 <td>{d.lastPushAt ?? '—'}</td>
                 <td className="flex gap-2 py-2">
@@ -354,7 +395,7 @@ export default function DeploymentsPage() {
               </tr>
               {editingId === d.id && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -401,7 +442,7 @@ export default function DeploymentsPage() {
               )}
               {sshPanelOpen[d.id] && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <SshAccessPanel
                       deploymentId={d.id}
                       onInstalled={() => client.invalidateQueries({ queryKey: ['deployments'] })}
@@ -411,7 +452,7 @@ export default function DeploymentsPage() {
               )}
               {logPanelOpen[d.id] && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <DeployLogView
                       deploymentId={d.id}
                       onSettled={() => client.invalidateQueries({ queryKey: ['deployments'] })}

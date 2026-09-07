@@ -136,6 +136,10 @@ describe('pushMovie', () => {
       synopsis: 'A movie about things.',
       posterUrl: 'https://example.com/poster.jpg',
       backdropUrl: 'https://example.com/backdrop.jpg',
+      logoUrl: 'https://example.com/logo.png',
+      trailerYoutubeId: 'dQw4w9WgXcQ',
+      rating: 'PG_13',
+      durationSec: 7200,
     });
 
     const createCall = vi.mocked(fetch).mock.calls.find(([u, init]) => init?.method === 'POST');
@@ -144,6 +148,10 @@ describe('pushMovie', () => {
       synopsis: 'A movie about things.',
       posterUrl: 'https://example.com/poster.jpg',
       backdropUrl: 'https://example.com/backdrop.jpg',
+      logoUrl: 'https://example.com/logo.png',
+      trailerYoutubeId: 'dQw4w9WgXcQ',
+      rating: 'PG_13',
+      durationSec: 7200,
     });
   });
 
@@ -163,6 +171,9 @@ describe('pushMovie', () => {
     expect(body).not.toHaveProperty('synopsis');
     expect(body).not.toHaveProperty('posterUrl');
     expect(body).not.toHaveProperty('genreIds');
+    expect(body).not.toHaveProperty('trailerYoutubeId');
+    expect(body).not.toHaveProperty('rating');
+    expect(body).not.toHaveProperty('durationSec');
   });
 });
 
@@ -418,7 +429,7 @@ describe('pushEpisode', () => {
     });
   });
 
-  it('does not re-send series metadata when reusing an existing series', async () => {
+  it('re-sends series-level metadata via PUT when reusing an existing series, instead of freezing it after creation', async () => {
     vi.mocked(fetch).mockImplementation((url, init) => {
       const u = String(url);
       if (u.includes('/api/admin/titles?')) {
@@ -428,7 +439,13 @@ describe('pushEpisode', () => {
           }),
         );
       }
-      if (u.endsWith('/api/admin/titles/series1')) {
+      if (u.endsWith('/api/admin/genres') && (!init || init.method === undefined)) {
+        return Promise.resolve(new Response(JSON.stringify([{ id: 'genre-comedy', name: 'Comedy' }]), { status: 200 }));
+      }
+      if (u.endsWith('/api/admin/titles/series1') && init?.method === 'PUT') {
+        return Promise.resolve(new Response(JSON.stringify({ id: 'series1' }), { status: 200 }));
+      }
+      if (u.endsWith('/api/admin/titles/series1') && (!init || init.method === undefined)) {
         return Promise.resolve(
           new Response(JSON.stringify({ id: 'series1', seasons: [{ id: 'season1', number: 1, episodes: [] }] }), {
             status: 200,
@@ -448,10 +465,28 @@ describe('pushEpisode', () => {
       seasonNumber: 1,
       episodeNumber: 2,
       genreNames: ['Comedy'],
+      trailerYoutubeId: 'abc12345678',
+      rating: 'TV_14',
+      creditsLeadSec: 45,
     });
 
-    // No genre lookup, no title create — reusing an existing series touches neither.
-    const genreCalls = vi.mocked(fetch).mock.calls.filter(([u]) => String(u).endsWith('/api/admin/genres'));
-    expect(genreCalls).toHaveLength(0);
+    // No title create — reusing an existing series only ever PUTs, never re-creates.
+    const createCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([u, init]) => init?.method === 'POST' && String(u).endsWith('/api/admin/titles'));
+    expect(createCalls).toHaveLength(0);
+
+    const putCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([u, init]) => String(u).endsWith('/api/admin/titles/series1') && init?.method === 'PUT');
+    expect(putCall).toBeDefined();
+    const body = JSON.parse(putCall![1]?.body as string);
+    expect(body).toMatchObject({
+      type: 'SERIES',
+      genreIds: ['genre-comedy'],
+      trailerYoutubeId: 'abc12345678',
+      rating: 'TV_14',
+      creditsLeadSec: 45,
+    });
   });
 });

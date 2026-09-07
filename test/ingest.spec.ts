@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { classifyPath, buildContentItemData, MOVIE_CATEGORIES } from '../src/lib/ingest';
+import type { MovieMetadata } from '../src/lib/tmdb';
 
 describe('classifyPath', () => {
   it('accepts a movie under an allowlisted category', () => {
@@ -101,13 +102,17 @@ describe('buildContentItemData', () => {
     parsed: { name: 'Haseen Dillruba', year: 2021 },
   };
 
-  const meta = {
+  const meta: MovieMetadata = {
     tmdbId: 550,
     name: 'Haseen Dillruba',
     year: 2021,
     synopsis: 'A wife becomes the prime suspect.',
     posterUrl: 'https://image.tmdb.org/t/p/w500/p.jpg',
     backdropUrl: 'https://image.tmdb.org/t/p/w1280/b.jpg',
+    logoUrl: 'https://image.tmdb.org/t/p/w300/l.png',
+    trailerYoutubeId: 'dQw4w9WgXcQ',
+    rating: 'PG_13',
+    durationSec: 8160,
     genreNames: ['Crime', 'Mystery'],
     confident: true,
   };
@@ -125,6 +130,10 @@ describe('buildContentItemData', () => {
       synopsis: 'A wife becomes the prime suspect.',
       posterUrl: 'https://image.tmdb.org/t/p/w500/p.jpg',
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/b.jpg',
+      logoUrl: 'https://image.tmdb.org/t/p/w300/l.png',
+      trailerYoutubeId: 'dQw4w9WgXcQ',
+      rating: 'PG_13',
+      durationSec: 8160,
       genreNames: ['Crime', 'Mystery'],
       isPublished: true,
     });
@@ -161,6 +170,10 @@ describe('buildContentItemData', () => {
       synopsis: null,
       posterUrl: null,
       backdropUrl: null,
+      logoUrl: null,
+      trailerYoutubeId: null,
+      rating: null,
+      durationSec: null,
       genreNames: [],
       isPublished: false,
     });
@@ -180,13 +193,17 @@ describe('buildContentItemData', () => {
       category: 'tv-series',
       parsed: { name: 'Friends', year: 1994, seasonNumber: 1, episodeNumber: 10 },
     };
-    const seriesMeta = {
+    const seriesMeta: MovieMetadata = {
       tmdbId: 1668,
       name: 'Friends',
       year: 1994,
       synopsis: 'Six young people...',
       posterUrl: 'https://image.tmdb.org/t/p/w500/tv-poster.jpg',
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/tv-backdrop.jpg',
+      logoUrl: 'https://image.tmdb.org/t/p/w300/tv-logo.png',
+      trailerYoutubeId: 'abc12345678',
+      rating: 'TV_14',
+      durationSec: null,
       genreNames: ['Comedy'],
       confident: true,
     };

@@ -4,6 +4,24 @@ import { prisma } from './prisma';
 import { buildDeployInvocation, parseAdminPassword, parseDeployedCommit } from './deploy-command';
 import { defaultKnownHostsPath, ensureKnownHostsDir, resolveSshIdentity } from './ssh-identity';
 import { pathWithShim, writeKeyAuthShim } from './ssh-shim';
+import { syncMissingContent } from './content-sync';
+
+/**
+ * Fires whenever a deployment transitions to ACTIVE (both call sites below): a deployment that
+ * only just went live has never had a fan-out chance for any ContentItem submitted before this
+ * moment (see the module comment on syncMissingContent), so without this every deployment starts
+ * out missing its entire back catalog until someone notices and clicks "Sync missing content" by
+ * hand. Best-effort and non-blocking on purpose — the deployment itself is already successfully
+ * ACTIVE by the time this runs, and a sync hiccup (a transient DB error) must not undo that or
+ * fail an otherwise-successful provision run; the manual sync button is the backstop.
+ */
+async function syncOnActivation(deploymentId: string): Promise<void> {
+  try {
+    await syncMissingContent(deploymentId);
+  } catch (err) {
+    console.error(`[jarvis] syncMissingContent(deploymentId=${deploymentId}) failed after activation`, err);
+  }
+}
 
 async function mintContentApiKey(baseUrl: string, adminEmail: string, adminPassword: string): Promise<string> {
   const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
@@ -145,6 +163,7 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
           where: { id: deploymentId },
           data: { status: 'ACTIVE', lastProvisionedAt: new Date(), deployedCommit: parseDeployedCommit(logText) },
         });
+        await syncOnActivation(deploymentId);
         return;
       }
 
@@ -215,6 +234,7 @@ export async function executeProvisioning(deploymentId: string, runId: string): 
         deployedCommit: parseDeployedCommit(logText),
       },
     });
+    await syncOnActivation(deploymentId);
   } catch (err) {
     // Belt-and-suspenders: whatever stage threw (initial lookup, missing OTT_REPO_PATH, spawn setup,
     // the terminal DB writes above, or minting), make sure the run and deployment both land in a

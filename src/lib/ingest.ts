@@ -1,5 +1,6 @@
 import { parseEpisodePath, parseMoviePath, ParsedEpisode, ParsedMovie } from './filename-parse';
 import type { MovieMetadata } from './tmdb';
+import type { MaturityRatingValue } from './content-schema';
 
 /**
  * Allowlist, not a blocklist. Both production FTP roots keep real content
@@ -86,6 +87,12 @@ export interface ContentItemData {
   synopsis: string | null;
   posterUrl: string | null;
   backdropUrl: string | null;
+  logoUrl: string | null;
+  trailerYoutubeId: string | null;
+  rating: MaturityRatingValue | null;
+  // MOVIE only in practice — a lookupSeries() meta always carries durationSec: null (see the
+  // field comment on tmdb.ts's NormalizedDetail), so this needs no kind check of its own.
+  durationSec: number | null;
   genreNames: string[];
   isPublished: boolean;
 }
@@ -121,6 +128,10 @@ export function buildContentItemData(
     synopsis: meta?.synopsis || null,
     posterUrl: meta?.posterUrl ?? null,
     backdropUrl: meta?.backdropUrl ?? null,
+    logoUrl: meta?.logoUrl ?? null,
+    trailerYoutubeId: meta?.trailerYoutubeId ?? null,
+    rating: meta?.rating ?? null,
+    durationSec: meta?.durationSec ?? null,
     genreNames: meta?.genreNames ?? [],
     isPublished: trusted,
   };

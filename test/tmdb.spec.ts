@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getTitleDetail, lookupMovie, lookupSeries, posterUrl, backdropUrl, searchTitles } from '../src/lib/tmdb';
+import { getTitleDetail, lookupMovie, lookupSeries, posterUrl, backdropUrl, logoUrl, searchTitles } from '../src/lib/tmdb';
 
 const config = { apiKey: 'test-key', language: 'en-US' };
 
@@ -34,11 +34,13 @@ describe('image URL helpers', () => {
   it('builds absolute CDN URLs at the same sizes the OTT app uses', () => {
     expect(posterUrl('/poster.jpg')).toBe('https://image.tmdb.org/t/p/w500/poster.jpg');
     expect(backdropUrl('/backdrop.jpg')).toBe('https://image.tmdb.org/t/p/w1280/backdrop.jpg');
+    expect(logoUrl('/logo.png')).toBe('https://image.tmdb.org/t/p/w300/logo.png');
   });
 
   it('returns null for a missing path rather than a broken URL', () => {
     expect(posterUrl(null)).toBeNull();
     expect(backdropUrl(undefined)).toBeNull();
+    expect(logoUrl(null)).toBeNull();
   });
 });
 
@@ -58,10 +60,98 @@ describe('lookupMovie', () => {
       synopsis: 'A wife becomes the prime suspect in her husband’s murder.',
       posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg',
+      logoUrl: null,
+      trailerYoutubeId: null,
+      rating: null,
+      durationSec: null,
       genreNames: ['Crime', 'Mystery'],
       confident: true,
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('requests videos/images/release_dates in the same detail call', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [SEARCH_HIT] }))
+      .mockResolvedValueOnce(jsonResponse(DETAIL));
+
+    await lookupMovie(config, 'Haseen Dillruba', 2021);
+
+    const [detailUrl] = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(String(detailUrl)).toContain('append_to_response=videos%2Cimages%2Crelease_dates');
+  });
+
+  it('extracts the official YouTube trailer, runtime, logo and US certification', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [SEARCH_HIT] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...DETAIL,
+          runtime: 136,
+          videos: {
+            results: [
+              { key: 'unofficial123', site: 'YouTube', type: 'Trailer', official: false },
+              { key: 'official456', site: 'YouTube', type: 'Trailer', official: true },
+              { key: 'teaser789', site: 'YouTube', type: 'Teaser', official: true },
+            ],
+          },
+          images: {
+            logos: [
+              { file_path: '/logo-ja.png', iso_639_1: 'ja' },
+              { file_path: '/logo-en.png', iso_639_1: 'en' },
+            ],
+          },
+          release_dates: {
+            results: [
+              { iso_3166_1: 'IN', release_dates: [{ certification: 'U/A' }] },
+              { iso_3166_1: 'US', release_dates: [{ certification: '' }, { certification: 'PG-13' }] },
+            ],
+          },
+        }),
+      );
+
+    const result = await lookupMovie(config, 'Haseen Dillruba', 2021);
+
+    expect(result?.trailerYoutubeId).toBe('official456');
+    expect(result?.logoUrl).toBe('https://image.tmdb.org/t/p/w300/logo-en.png');
+    expect(result?.rating).toBe('PG_13');
+    expect(result?.durationSec).toBe(136 * 60);
+  });
+
+  it('falls back to the first YouTube trailer when none is flagged official', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [SEARCH_HIT] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...DETAIL,
+          videos: { results: [{ key: 'first', site: 'YouTube', type: 'Trailer', official: false }] },
+        }),
+      );
+
+    const result = await lookupMovie(config, 'Haseen Dillruba', 2021);
+    expect(result?.trailerYoutubeId).toBe('first');
+  });
+
+  it('falls back to a language-agnostic logo, then any logo, when no English one exists', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [SEARCH_HIT] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ ...DETAIL, images: { logos: [{ file_path: '/agnostic.png', iso_639_1: null }] } }),
+      );
+
+    const result = await lookupMovie(config, 'Haseen Dillruba', 2021);
+    expect(result?.logoUrl).toBe('https://image.tmdb.org/t/p/w300/agnostic.png');
+  });
+
+  it('returns a null rating when TMDB has no US certification', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [SEARCH_HIT] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ ...DETAIL, release_dates: { results: [{ iso_3166_1: 'IN', release_dates: [{ certification: 'U/A' }] }] } }),
+      );
+
+    const result = await lookupMovie(config, 'Haseen Dillruba', 2021);
+    expect(result?.rating).toBeNull();
   });
 
   it('does not constrain the search by year, which silently destroys recall', async () => {
@@ -255,9 +345,31 @@ describe('lookupSeries', () => {
       synopsis: 'Six young people, on their own and struggling to survive in the real world...',
       posterUrl: 'https://image.tmdb.org/t/p/w500/tv-poster.jpg',
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/tv-backdrop.jpg',
+      logoUrl: null,
+      trailerYoutubeId: null,
+      rating: null,
+      // Not meaningful at the series level — see the field comment on ContentItem.durationSec.
+      durationSec: null,
       genreNames: ['Comedy'],
       confident: true,
     });
+  });
+
+  it('requests videos/images/content_ratings, and extracts a TV certification', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ results: [TV_SEARCH_HIT] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...TV_DETAIL,
+          content_ratings: { results: [{ iso_3166_1: 'US', rating: 'TV-14' }] },
+        }),
+      );
+
+    const result = await lookupSeries(config, 'Friends', 1994);
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain('append_to_response=videos%2Cimages%2Ccontent_ratings');
+    expect(result?.rating).toBe('TV_14');
   });
 
   it('searches /search/tv and fetches /tv/:id, not the movie endpoints', async () => {
@@ -356,6 +468,10 @@ describe('getTitleDetail', () => {
       synopsis: 'A wife becomes the prime suspect in her husband’s murder.',
       posterUrl: 'https://image.tmdb.org/t/p/w500/poster.jpg',
       backdropUrl: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg',
+      logoUrl: null,
+      trailerYoutubeId: null,
+      rating: null,
+      durationSec: null,
       genreNames: ['Crime', 'Mystery'],
     });
     expect(detail).not.toHaveProperty('confident');

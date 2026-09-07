@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { SESSION_COOKIE, verifySessionToken } from '@/lib/session';
 import { createDeploymentSchema } from '@/lib/deployment-schema';
+import { getContentStatusSummary } from '@/lib/content-sync';
 
 async function requireSession(req: NextRequest) {
   const token = req.cookies.get(SESSION_COOKIE)?.value;
@@ -18,7 +19,14 @@ export async function GET(req: NextRequest) {
     orderBy: { createdAt: 'desc' },
     omit: { contentApiKey: true },
   });
-  return NextResponse.json(deployments);
+
+  // One grouped query for every row's content status, rather than one query per row.
+  const statusByDeployment = await getContentStatusSummary(deployments.map((d) => d.id));
+  const withContentStatus = deployments.map((d) => ({
+    ...d,
+    contentStatus: statusByDeployment.get(d.id) ?? { total: 0, success: 0, pending: 0, failed: 0, missing: 0 },
+  }));
+  return NextResponse.json(withContentStatus);
 }
 
 export async function POST(req: NextRequest) {

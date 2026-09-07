@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { TmdbSearchPanel, type TitleDetail } from '@/components/TmdbSearchPanel';
+import { MATURITY_RATINGS } from '@/lib/content-schema';
 
 interface PushAttemptRow {
   id: string;
@@ -22,6 +23,11 @@ interface ContentItemRow {
   synopsis: string | null;
   posterUrl: string | null;
   backdropUrl: string | null;
+  logoUrl: string | null;
+  trailerYoutubeId: string | null;
+  rating: string | null;
+  durationSec: number | null;
+  creditsLeadSec: number | null;
   genreNames: string[];
   isPublished: boolean;
   submittedAt: string;
@@ -38,6 +44,13 @@ const emptyForm = {
   synopsis: '',
   posterUrl: '',
   backdropUrl: '',
+  logoUrl: '',
+  trailerYoutubeId: '',
+  rating: '',
+  // MOVIE only — shown/edited in minutes, stored on the wire in seconds.
+  durationMinutes: '',
+  // EPISODE only (series-level).
+  creditsLeadSec: '',
   genreNames: [] as string[],
   isPublished: true,
 };
@@ -55,6 +68,11 @@ function toFormState(item: ContentItemRow): FormState {
     synopsis: item.synopsis ?? '',
     posterUrl: item.posterUrl ?? '',
     backdropUrl: item.backdropUrl ?? '',
+    logoUrl: item.logoUrl ?? '',
+    trailerYoutubeId: item.trailerYoutubeId ?? '',
+    rating: item.rating ?? '',
+    durationMinutes: item.durationSec ? String(Math.round(item.durationSec / 60)) : '',
+    creditsLeadSec: item.creditsLeadSec !== null ? String(item.creditsLeadSec) : '',
     genreNames: item.genreNames,
     isPublished: item.isPublished,
   };
@@ -71,6 +89,11 @@ function toRequestBody(form: FormState) {
     synopsis: form.synopsis || undefined,
     posterUrl: form.posterUrl || undefined,
     backdropUrl: form.backdropUrl || undefined,
+    logoUrl: form.logoUrl || undefined,
+    trailerYoutubeId: form.trailerYoutubeId || undefined,
+    rating: form.rating || undefined,
+    durationSec: form.kind === 'MOVIE' && form.durationMinutes ? Number(form.durationMinutes) * 60 : undefined,
+    creditsLeadSec: form.kind === 'EPISODE' && form.creditsLeadSec ? Number(form.creditsLeadSec) : undefined,
     genreNames: form.genreNames.length > 0 ? form.genreNames : undefined,
     isPublished: form.isPublished,
   };
@@ -148,16 +171,12 @@ export default function ContentPage() {
       synopsis: detail.synopsis,
       posterUrl: detail.posterUrl ?? '',
       backdropUrl: detail.backdropUrl ?? '',
+      logoUrl: detail.logoUrl ?? '',
+      trailerYoutubeId: detail.trailerYoutubeId ?? '',
+      rating: detail.rating ?? '',
+      durationMinutes: detail.durationSec ? String(Math.round(detail.durationSec / 60)) : f.durationMinutes,
       genreNames: detail.genreNames,
     }));
-  };
-
-  const addGenre = () => {
-    const name = genreInput.trim();
-    if (name && !form.genreNames.includes(name)) {
-      setForm((f) => ({ ...f, genreNames: [...f.genreNames, name] }));
-    }
-    setGenreInput('');
   };
 
   return (
@@ -399,6 +418,49 @@ function ContentFields({
             className={`flex-1 ${inputClass}`}
           />
         </div>
+        <div className="flex gap-2">
+          {form.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={form.logoUrl} alt="" className="h-20 w-14 shrink-0 rounded bg-neutral-900 object-contain p-1" />
+          ) : (
+            <div className="h-20 w-14 shrink-0 rounded border border-dashed border-neutral-700" />
+          )}
+          <input
+            placeholder="Logo URL"
+            value={form.logoUrl}
+            onChange={(e) => setForm((f) => ({ ...f, logoUrl: e.target.value }))}
+            className={`flex-1 ${inputClass}`}
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <input
+          placeholder="Trailer — YouTube id or link"
+          value={form.trailerYoutubeId}
+          onChange={(e) => setForm((f) => ({ ...f, trailerYoutubeId: e.target.value }))}
+          className={`flex-1 ${inputClass}`}
+        />
+        <select
+          value={form.rating}
+          onChange={(e) => setForm((f) => ({ ...f, rating: e.target.value }))}
+          className={`w-32 ${inputClass}`}
+        >
+          <option value="">Rating</option>
+          {MATURITY_RATINGS.map((r) => (
+            <option key={r} value={r}>
+              {r.replace('_', '-')}
+            </option>
+          ))}
+        </select>
+        {form.kind === 'MOVIE' && (
+          <input
+            placeholder="Duration (min)"
+            value={form.durationMinutes}
+            onChange={(e) => setForm((f) => ({ ...f, durationMinutes: e.target.value }))}
+            className={`w-32 ${inputClass}`}
+          />
+        )}
       </div>
 
       <div className="space-y-2">
@@ -456,6 +518,13 @@ function ContentFields({
             value={form.episodeNumber}
             onChange={(e) => setForm((f) => ({ ...f, episodeNumber: e.target.value }))}
             className={`w-28 ${inputClass}`}
+          />
+          <input
+            placeholder="Credits lead time (sec)"
+            title="Series-level — seconds before an episode's own end when this show's credits typically start."
+            value={form.creditsLeadSec}
+            onChange={(e) => setForm((f) => ({ ...f, creditsLeadSec: e.target.value }))}
+            className={`flex-1 ${inputClass}`}
           />
         </div>
       )}

@@ -11,6 +11,9 @@ export interface MovieForPush {
   posterUrl?: string | null;
   backdropUrl?: string | null;
   logoUrl?: string | null;
+  trailerYoutubeId?: string | null;
+  rating?: string | null;
+  durationSec?: number | null;
   genreNames?: string[];
   /** Defaults to true so every pre-existing caller (manual /content submissions) keeps
    *  publishing immediately; the FTP watcher is the one caller that passes false. */
@@ -23,11 +26,17 @@ export interface EpisodeForPush {
   streamPath: string;
   seasonNumber: number;
   episodeNumber: number;
-  /** Series-level metadata — applied only when the series is first created (findOrCreateSeries
-   *  never re-PUTs an existing series), same as a movie's fields on pushMovie. */
+  /** Series-level metadata — re-sent on every push (findOrCreateSeries now PUTs an existing
+   *  match too), same as a movie's fields on pushMovie. */
   synopsis?: string;
   posterUrl?: string | null;
   backdropUrl?: string | null;
+  logoUrl?: string | null;
+  trailerYoutubeId?: string | null;
+  rating?: string | null;
+  /** Seconds before an episode's own end when this show's credits typically start — series-level,
+   *  same as the other fields above. */
+  creditsLeadSec?: number | null;
   genreNames?: string[];
   /** Defaults to true, same reasoning as MovieForPush.isPublished. */
   isPublished?: boolean;
@@ -175,6 +184,9 @@ export async function pushMovie(
     ...(item.posterUrl !== undefined && { posterUrl: item.posterUrl }),
     ...(item.backdropUrl !== undefined && { backdropUrl: item.backdropUrl }),
     ...(item.logoUrl !== undefined && { logoUrl: item.logoUrl }),
+    ...(item.trailerYoutubeId !== undefined && { trailerYoutubeId: item.trailerYoutubeId }),
+    ...(item.rating !== undefined && { rating: item.rating }),
+    ...(item.durationSec !== undefined && { durationSec: item.durationSec }),
     ...(genreIds !== undefined && { genreIds }),
   });
 
@@ -187,12 +199,36 @@ export async function pushMovie(
 
 // --- episodes ----------------------------------------------------------------
 
+/**
+ * Re-sends series-level metadata on every call, matching pushMovie — a prior version only sent
+ * it at creation, so an edit-and-retry on a series (or a newly added field like creditsLeadSec)
+ * silently never reached an already-created series. Same create-then-PUT idempotency as
+ * pushMovie, just with a find-or-create for the initial id since there is no admin "upsert by
+ * slug" endpoint for series.
+ */
 async function findOrCreateSeries(
   target: DeploymentTarget,
   item: EpisodeForPush,
   genreCache: GenreCache,
 ): Promise<AdminTitleDetail> {
   const { name, year } = item;
+  const genreIds = item.genreNames?.length ? await resolveGenreIds(target, item.genreNames, genreCache) : undefined;
+  const body = JSON.stringify({
+    type: 'SERIES',
+    slug: slugify(name, year),
+    name,
+    year: year ?? null,
+    isPublished: item.isPublished ?? true,
+    ...(item.synopsis !== undefined && { synopsis: item.synopsis }),
+    ...(item.posterUrl !== undefined && { posterUrl: item.posterUrl }),
+    ...(item.backdropUrl !== undefined && { backdropUrl: item.backdropUrl }),
+    ...(item.logoUrl !== undefined && { logoUrl: item.logoUrl }),
+    ...(item.trailerYoutubeId !== undefined && { trailerYoutubeId: item.trailerYoutubeId }),
+    ...(item.rating !== undefined && { rating: item.rating }),
+    ...(item.creditsLeadSec !== undefined && { creditsLeadSec: item.creditsLeadSec }),
+    ...(genreIds !== undefined && { genreIds }),
+  });
+
   const searchRes = await fetch(`${target.baseUrl}/api/admin/titles?perPage=50&q=${encodeURIComponent(name)}`, {
     headers: headers(target),
   });
@@ -201,27 +237,18 @@ async function findOrCreateSeries(
   const match = page.items.find((row) => row.type === 'SERIES' && row.name === name && row.year === (year ?? null));
 
   if (match) {
+    const putRes = await fetch(`${target.baseUrl}/api/admin/titles/${match.id}`, {
+      method: 'PUT',
+      headers: headers(target),
+      body,
+    });
+    await assertOk(putRes);
     const detailRes = await fetch(`${target.baseUrl}/api/admin/titles/${match.id}`, { headers: headers(target) });
     await assertOk(detailRes);
     return (await detailRes.json()) as AdminTitleDetail;
   }
 
-  const genreIds = item.genreNames?.length ? await resolveGenreIds(target, item.genreNames, genreCache) : undefined;
-  const createRes = await fetch(`${target.baseUrl}/api/admin/titles`, {
-    method: 'POST',
-    headers: headers(target),
-    body: JSON.stringify({
-      type: 'SERIES',
-      slug: slugify(name, year),
-      name,
-      year: year ?? null,
-      isPublished: item.isPublished ?? true,
-      ...(item.synopsis !== undefined && { synopsis: item.synopsis }),
-      ...(item.posterUrl !== undefined && { posterUrl: item.posterUrl }),
-      ...(item.backdropUrl !== undefined && { backdropUrl: item.backdropUrl }),
-      ...(genreIds !== undefined && { genreIds }),
-    }),
-  });
+  const createRes = await fetch(`${target.baseUrl}/api/admin/titles`, { method: 'POST', headers: headers(target), body });
   await assertOk(createRes);
   const created = (await createRes.json()) as { id: string };
   return { id: created.id, seasons: [] };

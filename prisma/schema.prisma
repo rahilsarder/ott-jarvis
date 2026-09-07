@@ -73,7 +73,35 @@ model ContentItem {
   // deployment, but lands unpublished so a mis-identification is never customer-visible.
   isPublished Boolean  @default(true)
 
+  logoUrl          String?
+  trailerYoutubeId String?
+  rating           MaturityRating?
+  /// MOVIE only — mirrors OTT's own Title.durationSec. Episodes carry no duration in this
+  /// pipeline (pushEpisode's admin API call has never sent per-episode metadata beyond the
+  /// name/streamPath convention — see the comment on EpisodeForPush).
+  durationSec      Int?
+  /// SERIES only (kind === EPISODE) — mirrors OTT's Title.creditsLeadSec exactly: seconds
+  /// before an episode's own end when this show's credits typically start. Carried on every
+  /// episode ContentItem of the same series (like synopsis/posterUrl already are) even though
+  /// it is only actually applied once, at series creation — see findOrCreateSeries.
+  creditsLeadSec   Int?
+
   pushAttempts PushAttempt[]
+}
+
+/// Mirrors OTT's own MaturityRating enum exactly (packages/shared/src/enums.ts) — Jarvis has no
+/// code-sharing with that repo, so this is kept in sync by hand.
+enum MaturityRating {
+  G
+  PG
+  PG_13
+  R
+  NC_17
+  TV_Y
+  TV_G
+  TV_PG
+  TV_14
+  TV_MA
 }
 
 enum PushStatus {
@@ -97,6 +125,7 @@ model PushAttempt {
   contentItem ContentItem @relation(fields: [contentItemId], references: [id])
   deployment  Deployment  @relation(fields: [deploymentId], references: [id])
 
+  @@unique([contentItemId, deploymentId])
   @@index([status, nextRetryAt])
 }
 

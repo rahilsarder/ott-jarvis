@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contentItemSchema } from '../src/lib/content-schema';
+import { contentItemSchema, extractYoutubeId } from '../src/lib/content-schema';
 
 describe('contentItemSchema', () => {
   it('accepts a movie with no season/episode numbers', () => {
@@ -78,5 +78,109 @@ describe('contentItemSchema', () => {
       backdropUrl: null,
     });
     expect(result.success).toBe(true);
+  });
+
+  it('accepts logoUrl, rating, durationSec and a bare trailer id', () => {
+    const result = contentItemSchema.safeParse({
+      kind: 'MOVIE',
+      name: 'Some Movie',
+      streamPath: 'vod/some-movie.mp4',
+      logoUrl: 'https://image.tmdb.org/t/p/w300/l.png',
+      rating: 'PG_13',
+      durationSec: 7200,
+      trailerYoutubeId: 'dQw4w9WgXcQ',
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.trailerYoutubeId).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts a trailer id from a pasted youtube.com/watch URL', () => {
+    const result = contentItemSchema.safeParse({
+      kind: 'MOVIE',
+      name: 'Some Movie',
+      streamPath: 'vod/some-movie.mp4',
+      trailerYoutubeId: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    });
+    expect(result.success && result.data.trailerYoutubeId).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts a trailer id from a youtu.be short link', () => {
+    const result = contentItemSchema.safeParse({
+      kind: 'MOVIE',
+      name: 'Some Movie',
+      streamPath: 'vod/some-movie.mp4',
+      trailerYoutubeId: 'https://youtu.be/dQw4w9WgXcQ',
+    });
+    expect(result.success && result.data.trailerYoutubeId).toBe('dQw4w9WgXcQ');
+  });
+
+  it('rejects an unrecognizable trailer value', () => {
+    const result = contentItemSchema.safeParse({
+      kind: 'MOVIE',
+      name: 'Some Movie',
+      streamPath: 'vod/some-movie.mp4',
+      trailerYoutubeId: 'not a youtube link',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a rating outside the known maturity ratings', () => {
+    const result = contentItemSchema.safeParse({
+      kind: 'MOVIE',
+      name: 'Some Movie',
+      streamPath: 'vod/some-movie.mp4',
+      rating: 'XXX',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts creditsLeadSec on an episode', () => {
+    const result = contentItemSchema.safeParse({
+      kind: 'EPISODE',
+      name: 'Some Series',
+      streamPath: 'vod/some-series-s01e01.mp4',
+      seasonNumber: 1,
+      episodeNumber: 1,
+      creditsLeadSec: 45,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a creditsLeadSec outside the sane bounds', () => {
+    const result = contentItemSchema.safeParse({
+      kind: 'EPISODE',
+      name: 'Some Series',
+      streamPath: 'vod/some-series-s01e01.mp4',
+      seasonNumber: 1,
+      episodeNumber: 1,
+      creditsLeadSec: 9999,
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('extractYoutubeId', () => {
+  it('passes a bare id through unchanged', () => {
+    expect(extractYoutubeId('dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts from a watch URL', () => {
+    expect(extractYoutubeId('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts from a youtu.be short link', () => {
+    expect(extractYoutubeId('https://youtu.be/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts from an embed URL', () => {
+    expect(extractYoutubeId('https://www.youtube.com/embed/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('extracts from a shorts URL', () => {
+    expect(extractYoutubeId('https://www.youtube.com/shorts/dQw4w9WgXcQ')).toBe('dQw4w9WgXcQ');
+  });
+
+  it('returns the input unchanged when nothing recognizable is found', () => {
+    expect(extractYoutubeId('not a link at all')).toBe('not a link at all');
   });
 });

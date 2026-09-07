@@ -18,6 +18,10 @@ export interface TitleDetail {
   synopsis: string;
   posterUrl: string | null;
   backdropUrl: string | null;
+  logoUrl: string | null;
+  trailerYoutubeId: string | null;
+  rating: string | null;
+  durationSec: number | null;
   genreNames: string[];
 }
 
@@ -143,8 +147,19 @@ export function TmdbSearchPanel({ kind, onApply }: Props) {
                   {detail.name}
                   {detail.year ? ` (${detail.year})` : ''}
                 </p>
-                {detail.genreNames.length > 0 && (
+                {(detail.genreNames.length > 0 || detail.rating || detail.durationSec || detail.trailerYoutubeId) && (
                   <div className="flex flex-wrap gap-1">
+                    {detail.rating && (
+                      <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-300">{detail.rating}</span>
+                    )}
+                    {detail.durationSec && (
+                      <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
+                        {Math.round(detail.durationSec / 60)} min
+                      </span>
+                    )}
+                    {detail.trailerYoutubeId && (
+                      <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-300">Trailer found</span>
+                    )}
                     {detail.genreNames.map((g) => (
                       <span key={g} className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
                         {g}
