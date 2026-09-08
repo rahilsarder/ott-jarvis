@@ -1,27 +1,40 @@
 #!/usr/bin/env bash
 #
 # One-command deploy for Jarvis itself — the control plane, not one of the
-# branded deployments it manages. Run this from your machine; it drives the
-# target entirely over SSH (any host alias already in ~/.ssh/config works),
-# same pattern as the OTT platform's own ops/deploy.sh, but far simpler: no
-# Flussonic, no catalog, no seed dump, no TLS/certbot branch at all — Jarvis's
-# session cookie is hardcoded `secure: false` (see src/app/api/auth/login/
-# route.ts) because it's an internal tool reached over a private network or
-# tunnel, never the public internet. If that ever changes, this script needs
-# a TLS path added before it's safe to put a real password behind it.
+# branded deployments it manages. Far simpler than the OTT platform's own
+# ops/deploy.sh (which this is modeled on): no Flussonic, no catalog, no seed
+# dump, no TLS/certbot branch at all — Jarvis's session cookie is hardcoded
+# `secure: false` (see src/app/api/auth/login/route.ts) because it's an
+# internal tool reached over a private network or tunnel, never the public
+# internet. If that ever changes, this script needs a TLS path added before
+# it's safe to put a real password behind it.
 #
-# First run against a host: full first-time setup (packages, Postgres role,
-# a local checkout of the OTT platform repo — see OTT_REPO_PATH below — env,
-# nginx, pm2, a nightly DB backup cron). Every later run against the same
-# host: detected by whether .env already exists remotely, and just pulls,
-# rebuilds, migrates and reloads — safe to re-run for routine updates.
+# Two ways to run it:
 #
-# Usage:
-#   ops/deploy.sh [ssh-target]
+#   ops/deploy.sh <ssh-target>
+#     From your own machine, driving a target over SSH (any host alias
+#     already in ~/.ssh/config works) — clones this repo onto the target
+#     itself as part of provisioning, so nothing needs to exist there first.
+#
+#   ops/deploy.sh --local
+#     Run ON the box you're provisioning, from inside a checkout you already
+#     cloned there yourself — as root (apt/systemctl/postgres all need it).
+#     Operates in place on that checkout rather than cloning a fresh copy
+#     from origin, so this also works when the current checkout has local
+#     commits that were never pushed.
+#
+# First run against a host (either way): full first-time setup (packages,
+# Postgres role, a local checkout of the OTT platform repo — see
+# OTT_REPO_PATH below — .env, nginx, pm2, a nightly DB backup cron). Every
+# later run against the same host: detected by whether .env already exists,
+# and just pulls, rebuilds, migrates and reloads — safe to re-run for
+# routine updates. (--local's "pull" is a real `git pull origin` too, same
+# as the SSH path — only the very first run skips it, using the checkout
+# as-is instead.)
 #
 # If this repo's git remote is private, the target VM needs its own
-# credentials (deploy key / PAT) for the clone step — this script does not
-# set that up. Same applies to the OTT platform repo it also clones below.
+# credentials (deploy key / PAT) to fetch future updates — this script does
+# not set that up. Same applies to the OTT platform repo cloned below.
 # Neither clone has anything to do with Jarvis's own SSH identity
 # (JARVIS_SSH_KEY_PATH) — that key is generated automatically on first use
 # and is only ever used for the *outbound* connections Jarvis makes to the
@@ -29,24 +42,66 @@
 # server" section).
 set -euo pipefail
 
-REPO_URL="$(git remote get-url origin)"
-BRANCH="$(git branch --show-current)"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
-INSTALL_DIR="/srv/jarvis"
 OTT_CLONE_DIR="/srv/ott-repo"
 
-TARGET="${1:-}"
-if [[ -z "$TARGET" ]]; then
+LOCAL_MODE=false
+TARGET=""
+for arg in "$@"; do
+  case "$arg" in
+    --local) LOCAL_MODE=true ;;
+    *) TARGET="$arg" ;;
+  esac
+done
+
+if [[ "$LOCAL_MODE" == true ]]; then
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Error: --local must be run as root (apt/systemctl/postgres all need it) — try: sudo ops/deploy.sh --local" >&2
+    exit 1
+  fi
+  # Operates on the checkout this script is already running from, wherever
+  # that is — no separate clone/copy step for Jarvis's own code at all, so a
+  # checkout with commits that were never pushed to origin deploys exactly
+  # as it sits.
+  INSTALL_DIR="$(git rev-parse --show-toplevel)"
+  BRANCH="$(git branch --show-current)"
+elif [[ -z "$TARGET" ]]; then
   read -rp "SSH target (alias from ~/.ssh/config, or user@host): " TARGET
 fi
 
+if [[ "$LOCAL_MODE" == false ]]; then
+  REPO_URL="$(git remote get-url origin)"
+  BRANCH="$(git branch --show-current)"
+  INSTALL_DIR="/srv/jarvis"
+fi
+
+# Runs the heredoc script piped into it either over SSH or directly, so the
+# provisioning body below is written once and used by both modes.
+run_provision_script() {
+  if [[ "$LOCAL_MODE" == true ]]; then
+    bash -s
+  else
+    ssh "$TARGET" bash -s
+  fi
+}
+
+DEPLOY_LABEL="$TARGET"
+[[ "$LOCAL_MODE" == true ]] && DEPLOY_LABEL="this box"
+
 # --- already deployed? just update ------------------------------------------
 
-if ssh "$TARGET" "test -f $INSTALL_DIR/.env" 2>/dev/null; then
-  echo "==> Existing deploy found at $TARGET:$INSTALL_DIR — updating."
+ALREADY_DEPLOYED=false
+if [[ "$LOCAL_MODE" == true ]]; then
+  [[ -f "$INSTALL_DIR/.env" ]] && ALREADY_DEPLOYED=true
+else
+  ssh "$TARGET" "test -f $INSTALL_DIR/.env" 2>/dev/null && ALREADY_DEPLOYED=true
+fi
 
-  ssh "$TARGET" bash -s <<EOF
+if [[ "$ALREADY_DEPLOYED" == true ]]; then
+  echo "==> Existing deploy found at $DEPLOY_LABEL:$INSTALL_DIR — updating."
+
+  run_provision_script <<EOF
 set -euo pipefail
 cd $INSTALL_DIR
 git fetch origin
@@ -78,11 +133,11 @@ else
   echo "    with 'OTT_REPO_PATH is not set' until it's cloned by hand: git clone <ott-repo-url> $OTT_CLONE_DIR" >&2
 fi
 EOF
-  echo "==> Update complete: $TARGET"
+  echo "==> Update complete: $DEPLOY_LABEL"
   exit 0
 fi
 
-echo "==> No existing deploy at $TARGET:$INSTALL_DIR — running first-time setup."
+echo "==> No existing deploy at $DEPLOY_LABEL:$INSTALL_DIR — running first-time setup."
 echo
 
 # --- prompts -----------------------------------------------------------------
@@ -173,13 +228,42 @@ NGINX
 sed -i.bak "s|__HOST_NAME__|${HOST_NAME}|g" "$SCRATCH/nginx.conf"
 rm -f "$SCRATCH/nginx.conf.bak"
 
-# --- push config and provision -------------------------------------------------
+# --- stage config files --------------------------------------------------------
 
-echo "==> Copying config to $TARGET..."
-scp "$SCRATCH/.env" "$TARGET:/tmp/jarvis.env"
-scp "$SCRATCH/nginx.conf" "$TARGET:/tmp/jarvis-nginx.conf"
+# Remote mode needs these copied over; local mode is already on the same
+# filesystem, so the scratch paths themselves are the staged paths.
+if [[ "$LOCAL_MODE" == true ]]; then
+  ENV_STAGED="$SCRATCH/.env"
+  NGINX_STAGED="$SCRATCH/nginx.conf"
+else
+  echo "==> Copying config to $TARGET..."
+  scp "$SCRATCH/.env" "$TARGET:/tmp/jarvis.env"
+  scp "$SCRATCH/nginx.conf" "$TARGET:/tmp/jarvis-nginx.conf"
+  ENV_STAGED="/tmp/jarvis.env"
+  NGINX_STAGED="/tmp/jarvis-nginx.conf"
+fi
 
-ssh "$TARGET" bash -s <<EOF
+# --- provision -----------------------------------------------------------------
+
+# Built as a plain string (not a heredoc) so $INSTALL_DIR/$BRANCH/$REPO_URL
+# expand now, at construction time, while \$(git rev-parse HEAD) stays
+# literal text — to be evaluated later, by whichever bash actually runs this
+# (see run_provision_script), not by this one while building the string.
+if [[ "$LOCAL_MODE" == true ]]; then
+  CLONE_OR_CD="cd \"$INSTALL_DIR\"
+echo \"Deployed commit: \$(git rev-parse HEAD)\""
+else
+  CLONE_OR_CD="mkdir -p $INSTALL_DIR
+cd $INSTALL_DIR
+if [ -d .git ]; then
+  git fetch origin && git checkout $BRANCH && git pull origin $BRANCH
+else
+  git clone --branch $BRANCH $REPO_URL .
+fi
+echo \"Deployed commit: \$(git rev-parse HEAD)\""
+fi
+
+run_provision_script <<EOF
 set -euo pipefail
 
 apt update -qq
@@ -207,16 +291,9 @@ sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='jarvis'" | grep
 sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='jarvis'" | grep -q 1 || \
   sudo -u postgres psql -c "CREATE DATABASE jarvis OWNER jarvis;"
 
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
-if [ -d .git ]; then
-  git fetch origin && git checkout $BRANCH && git pull origin $BRANCH
-else
-  git clone --branch $BRANCH $REPO_URL .
-fi
-echo "Deployed commit: \$(git rev-parse HEAD)"
+$CLONE_OR_CD
 
-mv /tmp/jarvis.env .env
+mv $ENV_STAGED .env
 
 pnpm install --frozen-lockfile
 pnpm exec prisma generate
@@ -232,7 +309,7 @@ if [ ! -d "$OTT_CLONE_DIR/.git" ]; then
   git clone ${OTT_REPO_URL} $OTT_CLONE_DIR
 fi
 
-cp /tmp/jarvis-nginx.conf /etc/nginx/sites-available/jarvis
+cp $NGINX_STAGED /etc/nginx/sites-available/jarvis
 ln -sf /etc/nginx/sites-available/jarvis /etc/nginx/sites-enabled/jarvis
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
@@ -263,10 +340,10 @@ echo " Admin login:    ${SEED_ADMIN_EMAIL}"
 echo " Admin password: ${SEED_ADMIN_PASSWORD}"
 echo " DB password:    ${DB_PASSWORD}   (only needed for direct psql access)"
 echo "------------------------------------------------------------------"
-echo " Full .env lives at ${TARGET}:${INSTALL_DIR}/.env — save the above,"
+echo " Full .env lives at ${DEPLOY_LABEL}:${INSTALL_DIR}/.env — save the above,"
 echo " it is not printed again."
 echo
-echo " Nightly DB backups: /var/backups/jarvis/*.sql.gz on ${TARGET}, 14-day"
+echo " Nightly DB backups: /var/backups/jarvis/*.sql.gz on ${DEPLOY_LABEL}, 14-day"
 echo " retention (/etc/cron.d/jarvis-backup). Copy these off-box periodically"
 echo " — a backup that only ever lives on the box it protects survives every"
 echo " failure except the one that destroys the box."
