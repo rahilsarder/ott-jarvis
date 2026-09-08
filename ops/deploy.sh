@@ -283,7 +283,13 @@ fi
 
 apt install -y -qq nginx postgresql git curl sshpass
 command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null; apt install -y -qq nodejs; }
-command -v pnpm >/dev/null || npm i -g pnpm >/dev/null
+# Pinned, not "npm i -g pnpm" (unpinned): an unpinned install grabbed whatever
+# the latest major happened to be the day this ran, which changed how it
+# reads build-script approval config (moved from package.json's "pnpm" field
+# to pnpm-workspace.yaml between versions) and broke "pnpm install
+# --frozen-lockfile" with ERR_PNPM_IGNORED_BUILDS on a fresh box. Pinned to
+# the version this repo is actually developed and tested against.
+command -v pnpm >/dev/null || npm i -g pnpm@10.8.0 >/dev/null
 command -v pm2  >/dev/null || npm i -g pm2  >/dev/null
 
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='jarvis'" | grep -q 1 || \
