@@ -229,6 +229,14 @@ pnpm install --frozen-lockfile
 pnpm exec prisma generate
 pnpm exec prisma migrate deploy
 pnpm build
+# Same self-heal reasoning as the nginx/OTT-repo checks below: a run that
+# died before ever reaching first-time-setup's "pnpm seed" step (this box's
+# first attempt died at pnpm install, right after .env was already written)
+# takes this update path forever after, which — before this line existed —
+# never seeded an admin either, silently locking every login out. seed.ts
+# does a plain upsert keyed on email, so re-running it on every update is
+# always safe, not just when JarvisUser happens to be empty.
+pnpm seed
 mkdir -p logs
 
 # "pm2 startOrReload" assumes the apps are already registered from a prior
