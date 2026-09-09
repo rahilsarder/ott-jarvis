@@ -86,6 +86,57 @@ run_provision_script() {
   fi
 }
 
+# Shared by first-time setup and the update path's self-heal below — a box
+# whose first-time setup died before reaching the nginx step (exactly what
+# happened here: pnpm install failed right after .env was already written,
+# so every run since has taken the update path, which never touches nginx)
+# needs the identical vhost either way.
+render_nginx_conf() {
+  local host="$1" out="$2"
+  # Written with a placeholder + sed rather than direct interpolation into
+  # the heredoc, deliberately: nginx's own $host/$request_uri/etc. must
+  # reach the file untouched, and mixing bash interpolation into the same
+  # heredoc as those is exactly how they end up as literal "\$host" in a
+  # live config (see the OTT platform's own deploy.sh, which hit this once
+  # for real).
+  cat > "$out" <<'NGINX'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __HOST_NAME__;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    client_max_body_size 5M;
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    location /_next/static/ {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_cache_valid 200 60m;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+    }
+}
+NGINX
+  sed -i.bak "s|__HOST_NAME__|${host}|g" "$out"
+  rm -f "${out}.bak"
+}
+
 DEPLOY_LABEL="$TARGET"
 [[ "$LOCAL_MODE" == true ]] && DEPLOY_LABEL="this box"
 
@@ -101,6 +152,57 @@ fi
 if [[ "$ALREADY_DEPLOYED" == true ]]; then
   echo "==> Existing deploy found at $DEPLOY_LABEL:$INSTALL_DIR — updating."
 
+  # .env existing is only proof Jarvis's own app config was written — it says
+  # nothing about nginx or the OTT repo clone, which live in unrelated
+  # locations and are only ever created by the first-time-setup block below.
+  # A run that died between writing .env and reaching either of those (e.g.
+  # pnpm install failing right after .env was moved into place) permanently
+  # takes this update path from then on, which — before this check existed —
+  # never touched either one again. Checked and, if missing, prompted for and
+  # healed right here instead.
+  NGINX_MISSING=false
+  OTT_MISSING=false
+  if [[ "$LOCAL_MODE" == true ]]; then
+    [[ -f /etc/nginx/sites-available/jarvis ]] || NGINX_MISSING=true
+    [[ -d "$OTT_CLONE_DIR/.git" ]] || OTT_MISSING=true
+  else
+    ssh "$TARGET" "test -f /etc/nginx/sites-available/jarvis" 2>/dev/null || NGINX_MISSING=true
+    ssh "$TARGET" "test -d $OTT_CLONE_DIR/.git" 2>/dev/null || OTT_MISSING=true
+  fi
+
+  NGINX_HEAL="true  # nginx already configured, nothing to heal"
+  if [[ "$NGINX_MISSING" == true ]]; then
+    echo "==> nginx site config missing on $DEPLOY_LABEL — an earlier first-time-setup attempt likely didn't finish."
+    read -rp "This box's hostname or IP (for nginx's server_name): " HOST_NAME
+    while [[ -z "$HOST_NAME" ]]; do
+      read -rp "  required — hostname or IP: " HOST_NAME
+    done
+    render_nginx_conf "$HOST_NAME" "$SCRATCH/nginx.conf"
+    if [[ "$LOCAL_MODE" == true ]]; then
+      NGINX_STAGED="$SCRATCH/nginx.conf"
+    else
+      scp "$SCRATCH/nginx.conf" "$TARGET:/tmp/jarvis-nginx.conf"
+      NGINX_STAGED="/tmp/jarvis-nginx.conf"
+    fi
+    NGINX_HEAL="cp $NGINX_STAGED /etc/nginx/sites-available/jarvis
+ln -sf /etc/nginx/sites-available/jarvis /etc/nginx/sites-enabled/jarvis
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload nginx"
+  fi
+
+  OTT_HEAL="echo \"==> Refreshing the OTT platform repo checkout at $OTT_CLONE_DIR (used by the Deploy action)...\"
+git -C $OTT_CLONE_DIR fetch origin
+git -C $OTT_CLONE_DIR checkout main
+git -C $OTT_CLONE_DIR pull origin main"
+  if [[ "$OTT_MISSING" == true ]]; then
+    read -rp "OTT platform repo URL (cloned onto this box for the Deploy action, e.g. git@github.com:you/ott.git): " OTT_REPO_URL
+    while [[ -z "$OTT_REPO_URL" ]]; do
+      read -rp "  required — OTT platform repo URL: " OTT_REPO_URL
+    done
+    OTT_HEAL="echo \"==> Cloning the OTT platform repo to $OTT_CLONE_DIR...\"
+git clone ${OTT_REPO_URL} $OTT_CLONE_DIR"
+  fi
+
   run_provision_script <<EOF
 set -euo pipefail
 cd $INSTALL_DIR
@@ -109,6 +211,20 @@ git checkout $BRANCH
 git pull origin $BRANCH
 echo "Deployed commit: \$(git rev-parse HEAD)"
 
+# Pinned version check, not "command -v pnpm || install" — a box that already
+# has some other pnpm version on PATH (e.g. from an earlier run of this
+# script before this pin existed) would otherwise keep that version forever,
+# since the update path never reaches the first-time-setup install step
+# again. Re-checked on every update, not just first-time setup.
+[ "\$(pnpm --version 2>/dev/null)" = "10.8.0" ] || npm i -g pnpm@10.8.0 >/dev/null
+
+# node_modules built by a different pnpm version (exactly what the pin above
+# just fixed, on a box that already has one) makes pnpm ask an interactive
+# "remove and reinstall from scratch?" question with no way to answer it
+# non-interactively (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR). Doing the rebuild
+# ourselves is the same outcome the prompt itself offers, minus the prompt —
+# cheap, since already-fetched packages come straight from pnpm's local store.
+rm -rf node_modules
 pnpm install --frozen-lockfile
 pnpm exec prisma generate
 pnpm exec prisma migrate deploy
@@ -123,15 +239,9 @@ mkdir -p logs
 pm2 startOrReload ops/ecosystem.config.js
 pm2 save
 
-if [ -d "$OTT_CLONE_DIR/.git" ]; then
-  echo "==> Refreshing the OTT platform repo checkout at $OTT_CLONE_DIR (used by the Deploy action)..."
-  git -C $OTT_CLONE_DIR fetch origin
-  git -C $OTT_CLONE_DIR checkout main
-  git -C $OTT_CLONE_DIR pull origin main
-else
-  echo "==> WARNING: $OTT_CLONE_DIR is missing — the Deploy action for every registered deployment will fail" >&2
-  echo "    with 'OTT_REPO_PATH is not set' until it's cloned by hand: git clone <ott-repo-url> $OTT_CLONE_DIR" >&2
-fi
+$OTT_HEAL
+
+$NGINX_HEAL
 EOF
   echo "==> Update complete: $DEPLOY_LABEL"
   exit 0
@@ -186,47 +296,7 @@ ENV
 
 # --- render nginx config -------------------------------------------------------
 
-# Written with a placeholder + sed rather than direct interpolation into the
-# heredoc, deliberately: nginx's own $host/$request_uri/etc. must reach the
-# file untouched, and mixing bash interpolation into the same heredoc as
-# those is exactly how they end up as literal "\$host" in a live config (see
-# the OTT platform's own deploy.sh, which hit this once for real).
-cat > "$SCRATCH/nginx.conf" <<'NGINX'
-server {
-    listen 80;
-    listen [::]:80;
-    server_name __HOST_NAME__;
-
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
-
-    client_max_body_size 5M;
-    gzip on;
-    gzip_types text/css application/javascript application/json image/svg+xml;
-    gzip_min_length 1024;
-
-    location /_next/static/ {
-        proxy_pass http://127.0.0.1:3100;
-        proxy_cache_valid 200 60m;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:3100;
-        proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        "upgrade";
-    }
-}
-NGINX
-sed -i.bak "s|__HOST_NAME__|${HOST_NAME}|g" "$SCRATCH/nginx.conf"
-rm -f "$SCRATCH/nginx.conf.bak"
+render_nginx_conf "$HOST_NAME" "$SCRATCH/nginx.conf"
 
 # --- stage config files --------------------------------------------------------
 
@@ -283,13 +353,14 @@ fi
 
 apt install -y -qq nginx postgresql git curl sshpass
 command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null; apt install -y -qq nodejs; }
-# Pinned, not "npm i -g pnpm" (unpinned): an unpinned install grabbed whatever
-# the latest major happened to be the day this ran, which changed how it
-# reads build-script approval config (moved from package.json's "pnpm" field
-# to pnpm-workspace.yaml between versions) and broke "pnpm install
-# --frozen-lockfile" with ERR_PNPM_IGNORED_BUILDS on a fresh box. Pinned to
-# the version this repo is actually developed and tested against.
-command -v pnpm >/dev/null || npm i -g pnpm@10.8.0 >/dev/null
+# Pinned version check, not "command -v pnpm || install" — an unpinned
+# install grabs whatever the latest major happens to be that day, which
+# changed how it reads build-script approval config (moved from
+# package.json's "pnpm" field to pnpm-workspace.yaml between versions) and
+# broke "pnpm install --frozen-lockfile" with ERR_PNPM_IGNORED_BUILDS. A
+# version *check* rather than a presence check also means a box left with
+# the wrong version from before this pin existed gets corrected here too.
+[ "\$(pnpm --version 2>/dev/null)" = "10.8.0" ] || npm i -g pnpm@10.8.0 >/dev/null
 command -v pm2  >/dev/null || npm i -g pm2  >/dev/null
 
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='jarvis'" | grep -q 1 || \
@@ -301,6 +372,12 @@ $CLONE_OR_CD
 
 mv $ENV_STAGED .env
 
+# No-op on a genuinely fresh clone; matters on --local's first-time setup,
+# where the checkout may already carry a node_modules built by whatever
+# pnpm was on the box before the version pin above corrected it — see the
+# matching comment on the update path above for why this avoids an
+# unanswerable interactive prompt (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR).
+rm -rf node_modules
 pnpm install --frozen-lockfile
 pnpm exec prisma generate
 pnpm exec prisma migrate deploy
